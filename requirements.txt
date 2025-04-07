@@ -7,7 +7,6 @@ matplotlib
 diffusers
 torch
 pywhatkit
-smtplib
 seaborn
 textblob
 pytrends
