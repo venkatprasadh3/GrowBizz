@@ -1,0 +1,17 @@
+slack-sdk
+slack-bolt
+google-generativeai
+pandas
+fpdf
+matplotlib
+diffusers
+torch
+pywhatkit
+smtplib
+seaborn
+textblob
+pytrends
+numpy
+scipy
+mysql-connector-python
+sqlalchemy
