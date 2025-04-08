@@ -30,9 +30,9 @@ import json
 from sqlalchemy import create_engine
 from decimal import Decimal
 from io import BytesIO
-from twilio.rest import Client  # Twilio import
-import threading  # Added for HTTP server
-from http.server import HTTPServer, BaseHTTPRequestHandler  # Added for HTTP server
+from twilio.rest import Client
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Configuration and Constants
 sns.set_style("darkgrid")
@@ -68,7 +68,7 @@ pipe = None
 client = WebClient(token=SLACK_BOT_TOKEN)
 model = genai.GenerativeModel("gemini-1.5-flash")
 pytrends = TrendReq(hl='en-IN', tz=330)
-twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)  # Initialize Twilio client
+twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 # Messaging Functions
 def send_whatsapp_message(phone_number, message):
@@ -544,7 +544,7 @@ def generate_invoice(customer_id=None, product=None, channel=None):
         client_info = "Akil K\nCSE\nCoimbatore"
         header = ["Product", "Qty", "Unit Price", "Total"]
         invoice_items = [
-            ["iPhone", 1, 700.00, 700.00],
+            ["iPhone", 1 w, 700.00, 700.00],
             ["Lightning Charging Cable", 1, 14.95, 14.95],
             ["Wired Headphones", 2, 11.99, 23.98],
             ["27in FHD Monitor", 1, 149.99, 149.99],
@@ -689,8 +689,14 @@ PSG College of Technology
 class DummyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Slack bot is running")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
 
 def run_http_server():
     server = HTTPServer(("", 3000), DummyHandler)
@@ -701,8 +707,10 @@ threading.Thread(target=run_http_server, daemon=True).start()
 
 # Slack Bot Setup
 if __name__ == "__main__":
-    initialize_databases()
-    initialize_models()
+    # initialize_databases()  # Commented out to avoid local MySQL connection attempt
+    # initialize_models()     # Commented out to avoid memory overload
+    global pipe
+    pipe = None  # Explicitly set to None to avoid uninitialized variable errors
     
     from slack_bolt import App
     from slack_bolt.adapter.socket_mode import SocketModeHandler
