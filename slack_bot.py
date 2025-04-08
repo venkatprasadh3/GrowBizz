@@ -8,8 +8,6 @@ import google.generativeai as genai
 import pandas as pd
 from fpdf import FPDF
 import matplotlib
-from diffusers import StableDiffusionPipeline
-import torch
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import datetime
@@ -28,7 +26,6 @@ from mysql.connector import Error
 import uuid
 import json
 from sqlalchemy import create_engine
-from decimal import Decimal
 from io import BytesIO
 from twilio.rest import Client
 import threading
@@ -52,7 +49,7 @@ TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]  # Required, no default
 TWILIO_PHONE_NUMBER = os.environ["TWILIO_PHONE_NUMBER"]  # Required, no default
 DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "English")
 
-# Database Configuration (Load from Environment Variables)
+# Database Configuration
 DB_CONFIG = {
     'host': os.getenv("DB_HOST", "localhost"),
     'user': os.getenv("DB_USER", "root"),
@@ -64,7 +61,7 @@ DB_URI = f"mysql+mysqlconnector://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{D
 
 # Global Variables
 user_states = {}
-pipe = None
+pipe = None  # Explicitly None to avoid uninitialized errors
 client = WebClient(token=SLACK_BOT_TOKEN)
 model = genai.GenerativeModel("gemini-1.5-flash")
 pytrends = TrendReq(hl='en-IN', tz=330)
@@ -171,7 +168,7 @@ def initialize_databases():
                 communication_language VARCHAR(50) DEFAULT 'English',
                 slack_id VARCHAR(255) UNIQUE,
                 registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+            )
         """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS sales (
@@ -181,7 +178,7 @@ def initialize_databases():
                 sale_amount DECIMAL(10,2),
                 sale_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (customer_id) REFERENCES users(customer_id)
-            );
+            )
         """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS inventory (
@@ -190,7 +187,7 @@ def initialize_databases():
                 price DECIMAL(10,2),
                 stock_count INT DEFAULT 0,
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
+            )
         """)
         conn.commit()
         return True
@@ -212,6 +209,7 @@ def load_sales_data():
         df['Price Each'] = pd.to_numeric(df['Price Each'], errors='coerce').fillna(0.0)
         return df
     except Exception as e:
+        logging.error(f"Error loading sales data: {e}")
         return f"Error loading sales data: {e}"
 
 # Customer Registration
@@ -281,7 +279,7 @@ def generate_image_in_parallel(prompt, channel):
     try:
         if pipe is None:
             return False
-       enhanced_prompt = f"{prompt} | vibrant and attractive product promotion, clear text, professional design"
+        enhanced_prompt = f"{prompt} | vibrant and attractive product promotion, clear text, professional design"
         image = pipe(enhanced_prompt).images[0]
         img_byte_arr = BytesIO()
         image.save(img_byte_arr, format='PNG')
@@ -319,7 +317,6 @@ def generate_weekly_sales_analysis(channel):
         return df
     
     try:
-        # Weekly Trend
         weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
         plt.figure(figsize=(12, 6))
         plt.plot(weekly_sales.index, weekly_sales.values, marker='o', linestyle='-', color='#4CAF50')
@@ -332,7 +329,6 @@ def generate_weekly_sales_analysis(channel):
         weekly_byte_arr.seek(0)
         plt.close()
 
-        # Overall Trend
         plt.figure(figsize=(12, 6))
         plt.plot(df['Order Date'], df['Price Each'].cumsum(), color='#2196F3')
         plt.title('Overall Sales Trend')
@@ -344,7 +340,6 @@ def generate_weekly_sales_analysis(channel):
         overall_byte_arr.seek(0)
         plt.close()
 
-        # Sales Distribution
         mu, std = norm.fit(df['Price Each'].dropna())
         plt.figure(figsize=(10, 6))
         sns.histplot(df['Price Each'], kde=True, stat="density", color='#2196F3')
@@ -359,7 +354,6 @@ def generate_weekly_sales_analysis(channel):
         dist_byte_arr.seek(0)
         plt.close()
 
-        # Upload to Slack
         client.files_upload_v2(channels=channel, file=weekly_byte_arr, filename="weekly_trend.png", title="Weekly Sales Trend")
         client.files_upload_v2(channels=channel, file=overall_byte_arr, filename="overall_trend.png", title="Overall Sales Trend")
         client.files_upload_v2(channels=channel, file=dist_byte_arr, filename="sales_distribution.png", title="Sales Distribution")
@@ -381,7 +375,7 @@ def get_user_language(user_id):
         logging.error(f"Language fetch error: {e}")
         return DEFAULT_LANGUAGE
     finally:
-        if conn.is_connected():
+        if conn and conn.is_connected():
             cursor.close()
             conn.close()
 
@@ -503,6 +497,8 @@ def generate_invoice(customer_id=None, product=None, channel=None):
 
     if customer_id and product:
         conn = create_db_connection()
+        if not conn:
+            return "Database connection failed."
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT * FROM users WHERE customer_id = %s", (customer_id,))
         customer = cursor.fetchone()
@@ -709,10 +705,10 @@ threading.Thread(target=run_http_server, daemon=True).start()
 
 # Slack Bot Setup
 if __name__ == "__main__":
-    # initialize_databases()  # Commented out to avoid local MySQL connection attempt
-    # initialize_models()     # Commented out to avoid memory overload
+    # initialize_databases()  # Disabled to avoid local MySQL connection attempts
+    # initialize_models()     # Disabled to avoid memory overload
     global pipe
-    pipe = None  # Explicitly set to None to avoid uninitialized variable errors
+    pipe = None  # Explicitly set to None
     
     from slack_bolt import App
     from slack_bolt.adapter.socket_mode import SocketModeHandler
