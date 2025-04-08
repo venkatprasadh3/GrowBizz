@@ -34,7 +34,7 @@ sns.set_style("darkgrid")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Hardcoded Channel ID (Replace with your actual channel ID)
-DEFAULT_CHANNEL_ID = os.getenv("DEFAULT_CHANNEL_ID", "C08586QDFE2")  # e.g., "C1234567890"
+DEFAULT_CHANNEL_ID = os.getenv("DEFAULT_CHANNEL_ID", "C08586QDFE2")  # Updated with your channel from logs
 
 # Application Constants (Load from Environment Variables)
 SALES_DATA_PATH = os.getenv("SALES_DATA_PATH", "sales_data.csv")
@@ -197,7 +197,7 @@ def handle_customer_registration(user_id, text):
         if len(phone) > 20:
             return "Phone number too long."
 
-        customer_id = str(uuid.uuid4())
+        customer_id = str(uuid.uuid4())  # Convert UUID to string immediately
         user_states[user_id] = {
             'customer_id': customer_id,
             'name': name,
@@ -231,7 +231,7 @@ def generate_promotion_image(prompt):
             client.files_upload_v2(
                 channels=DEFAULT_CHANNEL_ID,
                 file=img_byte_arr,
-                filename=f"promotion_{uuid.uuid4()[:8]}.png",
+                filename=f"promotion_{str(uuid.uuid4())[:8]}.png",
                 title="Promotion Image"
             )
             return True
@@ -445,7 +445,7 @@ def generate_invoice(customer_id=None, product=None):
         pdf_bytes = pdf.output(dest='S').encode('latin-1')
         pdf_byte_arr = BytesIO(pdf_bytes)
         pdf_byte_arr.seek(0)
-        filename = f"invoice_{customer_id or 'dynamic'}_{uuid.uuid4()[:8]}.pdf"
+        filename = f"invoice_{customer_id or 'dynamic'}_{str(uuid.uuid4())[:8]}.pdf"  # Fixed UUID slicing
 
         client.files_upload_v2(
             channels=DEFAULT_CHANNEL_ID,
@@ -513,7 +513,7 @@ def process_query(text, user_id):
                 lang = text.split("in ")[-1].strip()
                 body = translate_message(body, lang)
             return send_email(subject, body, [EMAIL_FROM], EMAIL_FROM, EMAIL_PASSWORD)
-        elif "invoice" in text:
+        elif "invoice" in text or "generate invoice" in text:  # Updated to handle your command
             return generate_invoice()
         else:
             return FALLBACK_RESPONSES["default"]
