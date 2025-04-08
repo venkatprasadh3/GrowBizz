@@ -15,3 +15,5 @@ mysql-connector-python
 sqlalchemy
 twilio
 transformers
+accelerate
+hf_xet
