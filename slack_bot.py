@@ -66,7 +66,8 @@ FALLBACK_RESPONSES = {
     "whatsapp": "Failed to send WhatsApp message. Please try again.",
     "email": "Email sending failed. Please retry later.",
     "invoice": "Sorry, invoice generation failed. Please try again.",
-    "default": "Oops! Something went wrong. Try: register, purchase, weekly analysis, insights, simple insights, promotion, whatsapp, email, invoice"
+    "default": "Oops! Something went wrong. Try: register, purchase, weekly analysis, insights, simple insights, promotion, whatsapp, email, invoice",
+    "not_in_channel": "I can't respond here. Please invite me to this channel with `/invite @YourBotName` or send me a direct message!"
 }
 
 # Messaging Functions
@@ -519,6 +520,21 @@ if __name__ == "__main__":
         text = event['text']
         channel = event['channel']
         response = process_query(text, user_id, channel)
-        say(response)
+        try:
+            say(response)
+        except SlackApiError as e:
+            if e.response["error"] == "not_in_channel":
+                # Attempt to send a DM to the user instead
+                try:
+                    client.chat_postMessage(
+                        channel=user_id,  # DM to the user
+                        text=FALLBACK_RESPONSES["not_in_channel"]
+                    )
+                except SlackApiError as dm_error:
+                    logging.error(f"Failed to send DM: {dm_error}")
+            else:
+                logging.error(f"Slack API error: {e}")
+                # Re-raise if it's not a channel membership issue
+                raise
 
     SocketModeHandler(app, SLACK_APP_TOKEN).start()
