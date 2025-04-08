@@ -279,7 +279,9 @@ def handle_customer_registration(user_id, text):
 # Promotion Generation with Parallel Processing
 def generate_image_in_parallel(prompt, channel):
     try:
-        enhanced_prompt = f"{prompt} | vibrant and attractive product promotion, clear text, professional design"
+        if pipe is None:
+            return False
+       enhanced_prompt = f"{prompt} | vibrant and attractive product promotion, clear text, professional design"
         image = pipe(enhanced_prompt).images[0]
         img_byte_arr = BytesIO()
         image.save(img_byte_arr, format='PNG')
@@ -305,7 +307,7 @@ def generate_promotion(prompt, channel):
             if future.result():
                 return f"{text_msg}\nPromotional image uploaded above!"
             else:
-                return f"{text_msg}\nFailed to generate promotional image."
+                return f"{text_msg}\nFailed to generate promotional image (Stable Diffusion not initialized)."
     except Exception as e:
         logging.error(f"Image generation setup failed: {e}")
         return "Image generation failed. Please try again."
@@ -544,7 +546,7 @@ def generate_invoice(customer_id=None, product=None, channel=None):
         client_info = "Akil K\nCSE\nCoimbatore"
         header = ["Product", "Qty", "Unit Price", "Total"]
         invoice_items = [
-            ["iPhone", 1 w, 700.00, 700.00],
+            ["iPhone", 1, 700.00, 700.00],
             ["Lightning Charging Cable", 1, 14.95, 14.95],
             ["Wired Headphones", 2, 11.99, 23.98],
             ["27in FHD Monitor", 1, 149.99, 149.99],
