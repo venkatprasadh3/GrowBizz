@@ -27,7 +27,7 @@ from io import BytesIO
 from twilio.rest import Client
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import image_gen  # Import the corrected image generation module
+import image_gen
 
 # Configuration and Constants
 sns.set_style("darkgrid")
@@ -39,10 +39,10 @@ CUSTOMER_DATA_PATH = os.getenv("CUSTOMER_DATA_PATH", "customer_shopping_data.csv
 LOGO_PATH = os.getenv("LOGO_PATH", "psg_logo_blue.png")
 WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER", "+919944934545")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "21z268@psgtech.ac.in")
-EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")  # Optional
-SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]  # Required
-SLACK_APP_TOKEN = os.environ["SLACK_APP_TOKEN"]  # Required
-GENAI_API_KEY = os.environ["GENAI_API_KEY"]  # Required
+EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
+SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
+SLACK_APP_TOKEN = os.environ["SLACK_APP_TOKEN"]
+GENAI_API_KEY = os.environ["GENAI_API_KEY"]
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")
@@ -67,7 +67,8 @@ FALLBACK_RESPONSES = {
     "email": "Email sending failed. Please retry later.",
     "invoice": "Sorry, invoice generation failed. Please try again.",
     "default": "Oops! Something went wrong. Try: register, purchase, weekly analysis, insights, simple insights, promotion, whatsapp, email, invoice",
-    "not_in_channel": "I can't respond here. Please invite me to this channel with `/invite @YourBotName` or send me a direct message!"
+    "not_in_channel": "I can't respond here. Please invite me to this channel with `/invite @YourBotName` or send me a direct message!",
+    "channel_not_found": "Channel not found or inaccessible. Please ensure I’m invited to the channel."
 }
 
 # Messaging Functions
@@ -75,13 +76,13 @@ def send_whatsapp_message(phone_number, message):
     if not twilio_client:
         return FALLBACK_RESPONSES["whatsapp"] + " (Twilio not configured)"
     try:
-        twilio_client.messages.create(
+        msg = twilio_client.messages.create(
             body=message,
             from_=f"whatsapp:{TWILIO_PHONE_NUMBER}",
             to=f"whatsapp:{phone_number}"
         )
-        logging.info(f"WhatsApp message sent to {phone_number}")
-        return f"WhatsApp message sent to {phone_number} successfully!"
+        logging.info(f"WhatsApp message sent to {phone_number}, SID: {msg.sid}")
+        return f"WhatsApp message sent to {phone_number} successfully! (SID: {msg.sid})"
     except Exception as e:
         logging.error(f"Error sending WhatsApp message: {e}")
         return FALLBACK_RESPONSES["whatsapp"]
@@ -166,7 +167,7 @@ def load_sales_data():
         logging.error(f"Error loading sales data: {e}")
         return None
 
-# Customer Registration (Simplified without DB)
+# Customer Registration
 def handle_customer_registration(user_id, text):
     if user_id not in user_states:
         user_states[user_id] = {'step': 0}
@@ -222,11 +223,7 @@ def generate_promotion_image(prompt, channel):
                     prompt = " ".join(p for p in parts if p != part)
                     break
         
-        img_byte_arr = image_gen.generate_promotion_image(
-            prompt,
-            discount_percentage,
-            api_key=GENAI_API_KEY
-        )
+        img_byte_arr = image_gen.generate_promotion_image(prompt, discount_percentage, api_key=GENAI_API_KEY)
         if img_byte_arr:
             client.files_upload_v2(
                 channels=channel,
@@ -235,7 +232,9 @@ def generate_promotion_image(prompt, channel):
                 title="Promotion Image"
             )
             return True
-        return False
+        else:
+            # Fallback to text if image generation fails
+            return False
     except Exception as e:
         logging.error(f"Promotion image generation failed: {e}")
         return False
@@ -247,7 +246,7 @@ def generate_promotion(prompt, channel):
             future = executor.submit(generate_promotion_image, prompt, channel)
             if future.result():
                 return f"{text_msg}\nPromotional image uploaded above!"
-            return FALLBACK_RESPONSES["promotion"]
+            return f"{text_msg}\n(Image generation unavailable; enjoy the deal anyway!)"
     except Exception as e:
         logging.error(f"Promotion generation failed: {e}")
         return FALLBACK_RESPONSES["promotion"]
@@ -259,6 +258,7 @@ def generate_weekly_sales_analysis(channel):
         return FALLBACK_RESPONSES["weekly analysis"]
     
     try:
+        # Weekly Trend
         weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
         plt.figure(figsize=(12, 6))
         plt.plot(weekly_sales.index, weekly_sales.values, marker='o', linestyle='-', color='#4CAF50')
@@ -271,8 +271,44 @@ def generate_weekly_sales_analysis(channel):
         weekly_byte_arr.seek(0)
         plt.close()
 
+        # Overall Trend
+        plt.figure(figsize=(12, 6))
+        plt.plot(df['Order Date'], df['Price Each'].cumsum(), color='#2196F3')
+        plt.title('Overall Sales Trend')
+        plt.xlabel('Date')
+        plt.ylabel('Cumulative Sales (INR)')
+        plt.grid(True)
+        overall_byte_arr = BytesIO()
+        plt.savefig(overall_byte_arr, format='PNG')
+        overall_byte_arr.seek(0)
+        plt.close()
+
+        # Sales Distribution
+        mu, std = norm.fit(df['Price Each'].dropna())
+        plt.figure(figsize=(10, 6))
+        sns.histplot(df['Price Each'], kde=True, stat="density", color='#2196F3')
+        x = np.linspace(df['Price Each'].min(), df['Price Each'].max(), 100)
+        plt.plot(x, norm.pdf(x, mu, std), 'r-', lw=2, label=f'Normal fit (μ={mu:.2f}, σ={std:.2f})')
+        plt.title('Sales Distribution with Normal Fit')
+        plt.xlabel('Sales Amount (INR)')
+        plt.ylabel('Density')
+        plt.legend()
+        dist_byte_arr = BytesIO()
+        plt.savefig(dist_byte_arr, format='PNG')
+        dist_byte_arr.seek(0)
+        plt.close()
+
+        # Upload all files
         client.files_upload_v2(channels=channel, file=weekly_byte_arr, filename="weekly_trend.png", title="Weekly Sales Trend")
-        return "Weekly sales trend uploaded above!"
+        client.files_upload_v2(channels=channel, file=overall_byte_arr, filename="overall_trend.png", title="Overall Sales Trend")
+        client.files_upload_v2(channels=channel, file=dist_byte_arr, filename="sales_distribution.png", title="Sales Distribution")
+        return ("Weekly analysis generated:\n"
+                "- Weekly Trend uploaded above\n"
+                "- Overall Trend uploaded above\n"
+                "- Sales Distribution uploaded above")
+    except SlackApiError as e:
+        logging.error(f"Analysis error: {e}")
+        return FALLBACK_RESPONSES["channel_not_found"]
     except Exception as e:
         logging.error(f"Analysis error: {e}")
         return FALLBACK_RESPONSES["weekly analysis"]
@@ -286,7 +322,10 @@ def translate_message(text, target_lang):
         logging.error(f"Translation error: {e}")
         return text
 
-# Purchase Processing (Simplified without DB)
+def get_user_language(user_id):
+    return user_states.get(user_id, {}).get('language', DEFAULT_LANGUAGE)
+
+# Purchase Processing
 def process_purchase(product_id, user_id, channel):
     try:
         if user_id not in user_states or 'customer_id' not in user_states[user_id]:
@@ -304,7 +343,7 @@ def process_purchase(product_id, user_id, channel):
         sale_id = str(uuid.uuid4())
         invoice_response = generate_invoice(user['customer_id'], {'product_name': product['Product'], 'price': product['Price Each']}, channel)
         message = f"Purchase confirmed: {product['Product']} for INR {product['Price Each']}"
-        translated_msg = translate_message(message, user.get('language', DEFAULT_LANGUAGE))
+        translated_msg = translate_message(message, get_user_language(user_id))
         
         whatsapp_response = send_whatsapp_message(user['phone'], translated_msg)
         return f"Purchase completed! Sale ID: `{sale_id}`\n{invoice_response}\n{whatsapp_response}"
@@ -376,45 +415,34 @@ def generate_invoice(customer_id=None, product=None, channel=None):
             gst_rate = 0.18
             gst_amount = total_before_gst * gst_rate
             total_with_gst = total_before_gst + gst_amount
-            
-            pdf.add_company_and_client_info(company_info, client_info)
-            pdf.add_table(header, invoice_items)
-            pdf.add_summary([
-                ("Subtotal", f"INR {total_before_gst:,.2f}"),
-                ("GST (18%)", f"INR {gst_amount:,.2f}"),
-                ("Total Amount", f"INR {total_with_gst:,.2f}")
-            ])
-            
-            pdf_bytes = pdf.output(dest='S').encode('latin-1')
-            pdf_byte_arr = BytesIO(pdf_bytes)
-            pdf_byte_arr.seek(0)
-            filename = f"invoice_{customer_id}_{uuid.uuid4()[:8]}.pdf"
         else:
             company_info = "PSG College of Technology\nCoimbatore, Tamil Nadu\nPhone: 123-456-7890"
             client_info = "Akil K\nCSE\nCoimbatore"
             header = ["Product", "Qty", "Unit Price", "Total"]
             invoice_items = [
                 ["iPhone", 1, 700.00, 700.00],
-                ["Lightning Charging Cable", 1, 14.95, 14.95]
+                ["Lightning Charging Cable", 1, 14.95, 14.95],
+                ["Wired Headphones", 2, 11.99, 23.98],
+                ["27in FHD Monitor", 1, 149.99, 149.99],
+                ["Wired Headphones", 1, 11.99, 11.99]
             ]
-            
             total_before_gst = sum(item[3] for item in invoice_items)
             gst_rate = 0.18
             gst_amount = total_before_gst * gst_rate
             total_with_gst = total_before_gst + gst_amount
-            
-            pdf.add_company_and_client_info(company_info, client_info)
-            pdf.add_table(header, invoice_items)
-            pdf.add_summary([
-                ("Subtotal", f"INR {total_before_gst:,.2f}"),
-                ("GST (18%)", f"INR {gst_amount:,.2f}"),
-                ("Total Amount", f"INR {total_with_gst:,.2f}")
-            ])
-            
-            pdf_bytes = pdf.output(dest='S').encode('latin-1')
-            pdf_byte_arr = BytesIO(pdf_bytes)
-            pdf_byte_arr.seek(0)
-            filename = "invoice_dynamic.pdf"
+        
+        pdf.add_company_and_client_info(company_info, client_info)
+        pdf.add_table(header, invoice_items)
+        pdf.add_summary([
+            ("Subtotal", f"INR {total_before_gst:,.2f}"),
+            ("GST (18%)", f"INR {gst_amount:,.2f}"),
+            ("Total Amount", f"INR {total_with_gst:,.2f}")
+        ])
+        
+        pdf_bytes = pdf.output(dest='S').encode('latin-1')
+        pdf_byte_arr = BytesIO(pdf_bytes)
+        pdf_byte_arr.seek(0)
+        filename = f"invoice_{customer_id or 'dynamic'}_{uuid.uuid4()[:8]}.pdf"
 
         if channel:
             client.files_upload_v2(
@@ -424,6 +452,9 @@ def generate_invoice(customer_id=None, product=None, channel=None):
                 title="Invoice"
             )
         return "Invoice uploaded above!"
+    except SlackApiError as e:
+        logging.error(f"Invoice generation error: {e}")
+        return FALLBACK_RESPONSES["channel_not_found"]
     except Exception as e:
         logging.error(f"Invoice generation error: {e}")
         return FALLBACK_RESPONSES["invoice"]
@@ -524,17 +555,15 @@ if __name__ == "__main__":
             say(response)
         except SlackApiError as e:
             if e.response["error"] == "not_in_channel":
-                # Attempt to send a DM to the user instead
                 try:
                     client.chat_postMessage(
-                        channel=user_id,  # DM to the user
+                        channel=user_id,
                         text=FALLBACK_RESPONSES["not_in_channel"]
                     )
                 except SlackApiError as dm_error:
                     logging.error(f"Failed to send DM: {dm_error}")
             else:
                 logging.error(f"Slack API error: {e}")
-                # Re-raise if it's not a channel membership issue
                 raise
 
     SocketModeHandler(app, SLACK_APP_TOKEN).start()
