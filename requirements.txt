@@ -4,16 +4,10 @@ google-generativeai
 pandas
 fpdf
 matplotlib
-diffusers
-torch
 seaborn
 textblob
 pytrends
 numpy
 scipy
-mysql-connector-python
-sqlalchemy
 twilio
-transformers
-accelerate
-hf_xet
+pillow
