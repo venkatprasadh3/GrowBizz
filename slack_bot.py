@@ -12,7 +12,6 @@ from diffusers import StableDiffusionPipeline
 import torch
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import pywhatkit
 import datetime
 import smtplib
 import seaborn as sns
@@ -31,6 +30,7 @@ import json
 from sqlalchemy import create_engine
 from decimal import Decimal
 from io import BytesIO
+from twilio.rest import Client  # Twilio import
 
 # Configuration and Constants
 sns.set_style("darkgrid")
@@ -45,6 +45,9 @@ EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]  # Required, no default
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]  # Required, no default
 SLACK_APP_TOKEN = os.environ["SLACK_APP_TOKEN"]  # Required, no default
 GENAI_API_KEY = os.environ["GENAI_API_KEY"]  # Required, no default
+TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]  # Required, no default
+TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]  # Required, no default
+TWILIO_PHONE_NUMBER = os.environ["TWILIO_PHONE_NUMBER"]  # Required, no default
 DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "English")
 
 # Database Configuration (Load from Environment Variables)
@@ -63,15 +66,18 @@ pipe = None
 client = WebClient(token=SLACK_BOT_TOKEN)
 model = genai.GenerativeModel("gemini-1.5-flash")
 pytrends = TrendReq(hl='en-IN', tz=330)
+twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)  # Initialize Twilio client
 
 # Messaging Functions
 def send_whatsapp_message(phone_number, message):
     try:
-        now = datetime.datetime.now()
-        send_time_hour = now.hour
-        send_time_minute = now.minute + 2
-        pywhatkit.sendwhatmsg(phone_number, message, send_time_hour, send_time_minute)
-        return f"WhatsApp message scheduled to {phone_number} successfully!"
+        twilio_client.messages.create(
+            body=message,
+            from_=f"whatsapp:{TWILIO_PHONE_NUMBER}",
+            to=f"whatsapp:{phone_number}"
+        )
+        logging.info(f"WhatsApp message sent to {phone_number}")
+        return f"WhatsApp message sent to {phone_number} successfully!"
     except Exception as e:
         logging.error(f"Error sending WhatsApp message: {e}")
         return f"An error occurred: {e}"
