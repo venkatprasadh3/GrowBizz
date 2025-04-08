@@ -1,3 +1,4 @@
+# slack_bot.py
 import os
 import re
 import logging
@@ -26,7 +27,7 @@ from io import BytesIO
 from twilio.rest import Client
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import image_gen  # Import the new image generation module
+import image_gen  # Import the corrected image generation module
 
 # Configuration and Constants
 sns.set_style("darkgrid")
@@ -150,7 +151,6 @@ def load_sales_data():
             df.dropna(subset=['invoice_date'], inplace=True)
             df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).astype('Int64')
             df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0.0)
-            # Rename columns to match sales_data.csv for consistency
             df = df.rename(columns={
                 'invoice_date': 'Order Date',
                 'category': 'Product',
@@ -221,7 +221,11 @@ def generate_promotion_image(prompt, channel):
                     prompt = " ".join(p for p in parts if p != part)
                     break
         
-        img_byte_arr = image_gen.generate_promotion_image(prompt, discount_percentage)
+        img_byte_arr = image_gen.generate_promotion_image(
+            prompt,
+            discount_percentage,
+            api_key=GENAI_API_KEY
+        )
         if img_byte_arr:
             client.files_upload_v2(
                 channels=channel,
