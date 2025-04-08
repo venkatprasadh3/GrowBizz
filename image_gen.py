@@ -1,25 +1,43 @@
-from google import genai
-from google.genai import types
+# image_gen.py
+import google.generativeai as genai
+from google.generativeai import types
 from PIL import Image
 from io import BytesIO
-import base64
 
+# Configure the client with the API key
 client = genai.Client(api_key="AIzaSyBjeahE-KUNTXCpd42RMeQ_IUVjHrvk9U0")
 
-contents = ('Hi, can you create a 50 percent offer poster for my burger shop named "Biggies Burger".I need a burger image and my shop name "Biggies Burger" in centre and the number 50 percent discount highlighted')
+def generate_promotion_image(prompt, discount_percentage, shop_name="Biggies Burger"):
+    """
+    Generate a promotion image based on the prompt, discount percentage, and shop name.
+    Returns a BytesIO object containing the image.
+    """
+    try:
+        # Construct the content string for Gemini
+        content = (
+            f"Create a {discount_percentage}% discount poster for my shop '{shop_name}'. "
+            f"Include an image related to '{prompt}', the shop name '{shop_name}' in the center, "
+            f"and highlight the {discount_percentage}% discount."
+        )
 
-response = client.models.generate_content(
-    model="gemini-2.0-flash-exp-image-generation",
-    contents=contents,
-    config=types.GenerateContentConfig(
-      response_modalities=['Text', 'Image']
-    )
-)
+        # Generate content with text and image modalities
+        response = client.models.generate_content(
+            model="gemini-2.0-flash-exp-image-generation",
+            contents=content,
+            config=types.GenerateContentConfig(
+                response_modalities=['Text', 'Image']
+            )
+        )
 
-for part in response.candidates[0].content.parts:
-  if part.text is not None:
-    print(part.text)
-  elif part.inline_data is not None:
-    image = Image.open(BytesIO((part.inline_data.data)))
-    image.save('gemini-native-image.png')
-    image.show()
+        # Extract the image from the response
+        for part in response.candidates[0].content.parts:
+            if part.inline_data is not None:
+                image = Image.open(BytesIO(part.inline_data.data))
+                img_byte_arr = BytesIO()
+                image.save(img_byte_arr, format='PNG')
+                img_byte_arr.seek(0)
+                return img_byte_arr
+        return None  # No image found in response
+    except Exception as e:
+        print(f"Error generating promotion image: {e}")
+        return None
