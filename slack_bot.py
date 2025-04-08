@@ -707,9 +707,6 @@ threading.Thread(target=run_http_server, daemon=True).start()
 if __name__ == "__main__":
     # initialize_databases()  # Disabled to avoid local MySQL connection attempts
     # initialize_models()     # Disabled to avoid memory overload
-    global pipe
-    pipe = None  # Explicitly set to None
-    
     from slack_bolt import App
     from slack_bolt.adapter.socket_mode import SocketModeHandler
 
