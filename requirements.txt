@@ -6,7 +6,7 @@ fpdf
 matplotlib
 diffusers
 torch
-pywhatkit
+twilio
 seaborn
 textblob
 pytrends
