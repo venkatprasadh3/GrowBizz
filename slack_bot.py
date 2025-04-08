@@ -31,6 +31,8 @@ from sqlalchemy import create_engine
 from decimal import Decimal
 from io import BytesIO
 from twilio.rest import Client  # Twilio import
+import threading  # Added for HTTP server
+from http.server import HTTPServer, BaseHTTPRequestHandler  # Added for HTTP server
 
 # Configuration and Constants
 sns.set_style("darkgrid")
@@ -309,7 +311,7 @@ def generate_promotion(prompt, channel):
         return "Image generation failed. Please try again."
 
 # Weekly Sales Analysis
-def generate_weekly_sales_analysis(channel):
+def generate_weekly_sales_analysis HEART(channel):
     df = load_sales_data()
     if isinstance(df, str):
         return df
@@ -682,6 +684,20 @@ PSG College of Technology
         return "Sample invoice uploaded above!"
     else:
         return "Command not recognized. Available: register, purchase, weekly analysis, insights, simple insights, promotion, whatsapp, email, invoice"
+
+# Minimal HTTP Server for Render Web Service
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Slack bot is running")
+
+def run_http_server():
+    server = HTTPServer(("", 3000), DummyHandler)
+    server.serve_forever()
+
+# Start the HTTP server in a background thread
+threading.Thread(target=run_http_server, daemon=True).start()
 
 # Slack Bot Setup
 if __name__ == "__main__":
