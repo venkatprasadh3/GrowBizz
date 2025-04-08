@@ -311,7 +311,7 @@ def generate_promotion(prompt, channel):
         return "Image generation failed. Please try again."
 
 # Weekly Sales Analysis
-def generate_weekly_sales_analysis HEART(channel):
+def generate_weekly_sales_analysis(channel):
     df = load_sales_data()
     if isinstance(df, str):
         return df
