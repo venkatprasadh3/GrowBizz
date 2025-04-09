@@ -1,13 +1,13 @@
 slack-bolt>=1.18.0
-slack-sdk>=3.21.0
+slack-sdk>=3.27.1
 google-generativeai>=0.3.0
-pandas>=2.0.0
+pandas>=2.1.0
 fpdf>=1.7.2
-matplotlib>=3.7.0
+matplotlib>=3.7.2
 seaborn>=0.12.0
 textblob>=0.17.0
 pytrends>=4.9.0
 numpy>=1.24.0
 scipy>=1.10.0
-twilio>=8.0.0
+twilio>=8.5.0
 Pillow>=9.0.0
