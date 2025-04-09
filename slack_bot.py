@@ -2,58 +2,43 @@
 import os
 import re
 import logging
-import concurrent.futures
+import pandas as pd
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-import pandas as pd
-from fpdf import FPDF
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import datetime
-import smtplib
-import seaborn as sns
-from email.mime.text import MIMEText
-from email.mime.image import MIMEImage
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from textblob import TextBlob
-from pytrends.request import TrendReq
-import numpy as np
-from scipy.stats import norm
 import uuid
 from io import BytesIO
 from twilio.rest import Client
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from PIL import Image, ImageDraw
+import google.generativeai as genai  # Correct import for Google Generative AI
+from fpdf import FPDF
 import image_gen  # Import promotion image generation
 
 # Configuration and Constants
-sns.set_style("darkgrid")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Environment Variables for API Keys and Tokens
+# Environment Variables
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 SLACK_APP_TOKEN = os.environ["SLACK_APP_TOKEN"]
-GENAI_API_KEY = os.environ["GENAI_API_KEY"]  # Used in image_gen.py
+GENAI_API_KEY = os.environ["GENAI_API_KEY"]
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")
-
-# Other Constants
 SALES_DATA_PATH = os.getenv("SALES_DATA_PATH", "sales_data.csv")
 CUSTOMER_DATA_PATH = os.getenv("CUSTOMER_DATA_PATH", "customer_shopping_data.csv")
-LOGO_PATH = os.getenv("LOGO_PATH", "psg_logo_blue.png")
 WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER", "+919944934545")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "21z268@psgtech.ac.in")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
 DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "English")
 
 # Global Variables
-user_states = {}  # Tracks user-specific conversation state
+user_states = {}  # {user_id: {'last_message': str, 'context': str, 'dm_channel': str}}
 client = WebClient(token=SLACK_BOT_TOKEN)
-pytrends = TrendReq(hl='en-IN', tz=330)
+genai.configure(api_key=GENAI_API_KEY)  # Configure Google Generative AI
+model = genai.GenerativeModel("gemini-1.5-flash")  # Define the model for translation and queries
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
 
 # Static Fallback Responses
@@ -65,11 +50,9 @@ FALLBACK_RESPONSES = {
     "simple insights": "Simple insights unavailable. Check back soon!",
     "promotion": "Promotion image generation failed. Try again later.",
     "whatsapp": "Failed to send WhatsApp message. Please try again.",
-    "email": "Email sending failed. Please retry later.",
     "invoice": "Sorry, invoice generation failed. Please try again.",
-    "default": "Oops! Something went wrong. Try: register, purchase, weekly analysis, insights, simple insights, promotion, whatsapp, email, invoice",
+    "default": "Oops! I didn’t understand that. Try: register, purchase, weekly analysis, insights, simple insights, promotion, whatsapp, invoice, or ask me anything!",
     "not_in_channel": "I can't respond here. Please invite me to this channel with `/invite @YourBotName` or send me a direct message!",
-    "channel_not_found": "Specified channel not found. File sent to your DM instead."
 }
 
 # Helper to Get DM Channel
@@ -97,56 +80,6 @@ def send_whatsapp_message(phone_number, message):
     except Exception as e:
         logging.error(f"WhatsApp error: {e}")
         return "Failed to send WhatsApp message."
-
-def send_email(subject, body, to_emails, from_email, password, images=None, attachments=None):
-    if not EMAIL_PASSWORD:
-        return FALLBACK_RESPONSES["email"] + " (Email not configured)"
-    if isinstance(to_emails, str):
-        to_emails = [to_emails]
-    to_emails = [re.sub(r'mailto:|\|.*$', '', email.strip()) for email in to_emails]
-    logging.info(f"Sending email to: {to_emails}")
-
-    msg = MIMEMultipart()
-    msg["Subject"] = subject
-    msg["From"] = from_email
-    msg["To"] = ", ".join(to_emails)
-    msg.attach(MIMEText(body, "plain"))
-
-    if images:
-        images = [images] if not isinstance(images, list) else images
-        for image_path in images:
-            try:
-                with open(image_path, 'rb') as img_file:
-                    img = MIMEImage(img_file.read(), name=os.path.basename(image_path))
-                    msg.attach(img)
-            except FileNotFoundError:
-                logging.error(f"Image not found: {image_path}")
-
-    if attachments:
-        attachments = [attachments] if not isinstance(attachments, list) else attachments
-        for attachment_path in attachments:
-            try:
-                with open(attachment_path, 'rb') as file:
-                    part = MIMEApplication(file.read(), name=os.path.basename(attachment_path))
-                    part['Content-Disposition'] = f'attachment; filename="{os.path.basename(attachment_path)}"'
-                    msg.attach(part)
-            except FileNotFoundError:
-                logging.error(f"Attachment not found: {attachment_path}")
-
-    smtp = None
-    try:
-        smtp = smtplib.SMTP("smtp.gmail.com", 587)
-        smtp.starttls()
-        smtp.login(from_email, password)
-        smtp.sendmail(from_email, to_emails, msg.as_string())
-        logging.info("Email sent successfully!")
-        return "Email sent successfully!"
-    except Exception as e:
-        logging.error(f"Failed to send email: {e}")
-        return FALLBACK_RESPONSES["email"]
-    finally:
-        if smtp:
-            smtp.quit()
 
 # Load Sales Data
 def load_sales_data():
@@ -178,7 +111,7 @@ def load_sales_data():
         logging.error(f"Error loading sales data: {e}")
         return None
 
-# Customer Registration with State Management
+# Customer Registration
 def handle_customer_registration(user_id, text):
     if user_id not in user_states:
         user_states[user_id] = {'last_message': '', 'context': 'idle'}
@@ -191,8 +124,6 @@ def handle_customer_registration(user_id, text):
         try:
             _, details = text.lower().split("register:", 1)
             name, email, phone, language, address = [x.strip() for x in details.split(',', 4)]
-            
-            # Clean phone number
             phone = re.sub(r'<tel:|\|.*$', '', phone).strip().replace('+', '')
             phone = '+' + phone if not phone.startswith('+') else phone
             
@@ -212,7 +143,7 @@ def handle_customer_registration(user_id, text):
             return f"Registration successful! Customer ID: `{customer_id}`\n{whatsapp_response}"
         except Exception as e:
             logging.error(f"Registration error: {e}")
-            return "Sorry, registration failed."
+            return FALLBACK_RESPONSES["register"]
     return "Please use: `register: name, email, phone, language, address`"
 
 # Promotion Generation
@@ -235,13 +166,13 @@ def generate_promotion(prompt, user_id):
             return "Failed to upload image: DM channel not available."
     else:
         logging.error("Promotion image generation failed")
-        return "Promotion generation failed."
+        return FALLBACK_RESPONSES["promotion"]
 
 # Weekly Sales Analysis
 def generate_weekly_sales_analysis(user_id):
     df = load_sales_data()
     if df is None:
-        return "Weekly analysis unavailable. Data might be missing."
+        return FALLBACK_RESPONSES["weekly analysis"]
 
     plt.figure(figsize=(10, 5))
     weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
@@ -270,7 +201,7 @@ def generate_weekly_sales_analysis(user_id):
             return "Failed to upload image: DM channel not available."
     else:
         logging.error("Weekly sales image is empty")
-        return "Weekly analysis failed. (Image was empty)"
+        return FALLBACK_RESPONSES["weekly analysis"]
 
 # Invoice Generation
 def generate_invoice(customer_id=None, product=None, user_id=None):
@@ -300,7 +231,7 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
         if customer_id and product:
             invoice_items = [[product['product_name'], 1, product['price'], product['price']]]
         else:
-            invoice_items = [["Sample Product", 1, 100.00, 100.00]]  # Default data
+            invoice_items = [["Sample Product", 1, 100.00, 100.00]]
 
         pdf.add_table(header, invoice_items)
         pdf_bytes = pdf.output(dest='S').encode('latin-1')
@@ -326,10 +257,10 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
                 return "Failed to upload invoice: DM channel not available."
         else:
             logging.error("Generated invoice is empty")
-            return "Sorry, invoice generation failed. (File was empty)"
+            return FALLBACK_RESPONSES["invoice"]
     except Exception as e:
         logging.error(f"Invoice generation error: {e}")
-        return "Sorry, invoice generation failed."
+        return FALLBACK_RESPONSES["invoice"]
 
 # Sales Insights
 def generate_sales_insights():
@@ -349,6 +280,15 @@ def generate_sales_insights():
         logging.error(f"Insights error: {e}")
         return FALLBACK_RESPONSES["simple insights"]
 
+# Basic Query Processing
+def process_basic_query(text):
+    try:
+        response = model.generate_content(f"Respond to this user query: {text}")
+        return response.text.strip()
+    except Exception as e:
+        logging.error(f"Basic query processing error: {e}")
+        return "Sorry, I couldn’t process that right now. Try something else!"
+
 # Query Processing with State Management
 def process_query(text, user_id, event_channel):
     text = text.lower().strip()
@@ -359,60 +299,29 @@ def process_query(text, user_id, event_channel):
     state['last_message'] = text
     logging.info(f"Processing query: '{text}' for user {user_id}, context: {state['context']}, event_channel: {event_channel}")
 
-    # Determine target_channel
-    parts = text.split(" in ")
-    if len(parts) == 2:
-        command = parts[0].strip()
-        target_channel = parts[1].strip()
-    else:
-        command = text.strip()
-        target_channel = event_channel
-
     try:
-        if "register" in command:
-            return handle_customer_registration(user_id, command)
-        elif "purchase:" in command:
-            product_id = command.split(":")[1].strip()
-            return process_purchase(product_id, user_id, target_channel)
-        elif "weekly analysis" in command:
+        if "register" in text:
+            return handle_customer_registration(user_id, text)
+        elif "weekly analysis" in text:
             state['context'] = 'idle'
             return generate_weekly_sales_analysis(user_id)
-        elif "insights" in command or "simple insights" in command:
+        elif "insights" in text or "simple insights" in text:
             state['context'] = 'idle'
             return generate_sales_insights()
-        elif "promotion:" in command:
-            prompt = command.replace("promotion:", "").strip()
+        elif "promotion:" in text:
+            prompt = text.replace("promotion:", "").strip()
             state['context'] = 'idle'
             return generate_promotion(prompt, user_id)
-        elif "whatsapp" in command:
+        elif "whatsapp" in text:
             message = "Hello, this is a test message from the bot!"
-            if "in " in command:
-                lang = command.split("in ")[-1].strip()
-                message = translate_message(message, lang)
             state['context'] = 'idle'
             return send_whatsapp_message(WHATSAPP_NUMBER, message)
-        elif "email" in command:
-            df = load_sales_data()
-            if df is None:
-                return FALLBACK_RESPONSES["email"]
-            top_customers = df.groupby("Purchase Address")["Price Each"].sum().nlargest(3)
-            subject = "Top Customers Report"
-            body = f"Top 3 customers:\n{top_customers.to_string()}"
-            if "in " in command:
-                lang = command.split("in ")[-1].strip()
-                body = translate_message(body, lang)
-            state['context'] = 'idle'
-            return send_email(subject, body, [EMAIL_FROM], EMAIL_FROM, EMAIL_PASSWORD)
-        elif "invoice" in command or "generate invoice" in command:
+        elif "invoice" in text or "generate invoice" in text:
             state['context'] = 'idle'
             return generate_invoice(user_id=user_id)
-        elif state['context'] == 'purchase_prompt':
-            return "Please specify a product with: `purchase: product_name`"
-        elif state['context'] == 'promotion_prompt':
-            return "Please specify a promotion with: `promotion: item discount%`"
         else:
             state['context'] = 'idle'
-            return FALLBACK_RESPONSES["default"]
+            return process_basic_query(text)  # Handle normal user prompts
     except Exception as e:
         logging.error(f"Query processing error: {e}")
         state['context'] = 'idle'
