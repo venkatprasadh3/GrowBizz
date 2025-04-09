@@ -1,15 +1,9 @@
 # image_gen.py
-import google.generativeai as genai
-import os
 from io import BytesIO
-
-# Configure Google Generative AI with environment variable
-genai.configure(api_key=os.environ["GENAI_API_KEY"])
+from PIL import Image, ImageDraw, ImageFont
 
 def generate_promotion_image(prompt):
-    # Fallback to PIL since Google API may not generate images in this version
     try:
-        from PIL import Image, ImageDraw, ImageFont
         img = Image.new('RGB', (400, 200), color='white')
         d = ImageDraw.Draw(img)
         font = ImageFont.load_default()
