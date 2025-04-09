@@ -44,7 +44,6 @@ USERS_PATH = "users.csv"
 user_states = {}
 client = WebClient(token=SLACK_BOT_TOKEN)
 genai.configure(api_key=GENAI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
 pytrends = TrendReq(hl='en-IN', tz=330)
 
@@ -75,8 +74,8 @@ def get_dm_channel(user_id):
 
 def translate_message(text, target_lang):
     try:
-        response = model.generate_content(f"Translate this to {target_lang}: {text}")
-        return response.text.strip()
+        response = genai.generate_text(prompt=f"Translate this to {target_lang}: {text}")
+        return response.result.strip()
     except Exception as e:
         logging.error(f"Translation error: {e}")
         return text
@@ -247,13 +246,13 @@ def generate_invoice(customer_id, product, user_id):
     try:
         logging.info(f"Generating invoice for user {user_id}")
         header = ["Product", "Qty", "Price", "Total"]
-        invoice_items = [[product['product_name'], 1, product['price'], product['price']]]
+        invoice_items = [[product['product_name'], 1, product['price'], product['price']]] if product else [["Sample Product", 1, 100.00, 100.00]]
 
         pdf.add_table(header, invoice_items)
         pdf_bytes = pdf.output(dest='S').encode('latin-1')
         pdf_byte_arr = BytesIO(pdf_bytes)
         pdf_byte_arr.seek(0)
-        filename = f"invoice_{customer_id}_{str(uuid.uuid4())[:8]}.pdf"
+        filename = f"invoice_{customer_id or 'sample'}_{str(uuid.uuid4())[:8]}.pdf"
 
         size = pdf_byte_arr.getbuffer().nbytes
         logging.info(f"Generated PDF size: {size} bytes")
@@ -445,7 +444,8 @@ def process_query(text, user_id, event_channel):
             return generate_invoice(None, None, user_id)
         else:
             state['context'] = 'idle'
-            return model.generate_content(f"Respond to this user query: {text}").text.strip()
+            response = genai.generate_text(prompt=f"Respond to this user query: {text}")
+            return response.result.strip()
     except Exception as e:
         logging.error(f"Query processing error: {e}")
         state['context'] = 'idle'
