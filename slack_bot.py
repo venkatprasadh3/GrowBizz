@@ -13,9 +13,13 @@ from io import BytesIO
 from twilio.rest import Client
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import google.generativeai as genai  # Correct import for Google Generative AI
+import google.generativeai as genai
 from fpdf import FPDF
-import image_gen  # Import promotion image generation
+from PIL import Image, ImageDraw, ImageFont
+import image_gen
+import numpy as np
+from scipy.stats import norm
+from pytrends.request import TrendReq
 
 # Configuration and Constants
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -33,13 +37,16 @@ WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER", "+919944934545")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "21z268@psgtech.ac.in")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
 DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "English")
+INVENTORY_PATH = "inventory.csv"
+USERS_PATH = "users.csv"
 
 # Global Variables
-user_states = {}  # {user_id: {'last_message': str, 'context': str, 'dm_channel': str}}
+user_states = {}
 client = WebClient(token=SLACK_BOT_TOKEN)
-genai.configure(api_key=GENAI_API_KEY)  # Configure Google Generative AI
-model = genai.GenerativeModel("gemini-1.5-flash")  # Define the model for translation and queries
+genai.configure(api_key=GENAI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
+pytrends = TrendReq(hl='en-IN', tz=330)
 
 # Static Fallback Responses
 FALLBACK_RESPONSES = {
@@ -51,11 +58,11 @@ FALLBACK_RESPONSES = {
     "promotion": "Promotion image generation failed. Try again later.",
     "whatsapp": "Failed to send WhatsApp message. Please try again.",
     "invoice": "Sorry, invoice generation failed. Please try again.",
-    "default": "Oops! I didn’t understand that. Try: register, purchase, weekly analysis, insights, simple insights, promotion, whatsapp, invoice, or ask me anything!",
+    "default": "Oops! I didn’t understand that. Try: register, purchase, weekly analysis, insights, promotion, whatsapp, invoice, or ask me anything!",
     "not_in_channel": "I can't respond here. Please invite me to this channel with `/invite @YourBotName` or send me a direct message!",
 }
 
-# Helper to Get DM Channel
+# Helper Functions
 def get_dm_channel(user_id):
     try:
         response = client.conversations_open(users=user_id)
@@ -66,50 +73,81 @@ def get_dm_channel(user_id):
         logging.error(f"Failed to open DM channel for {user_id}: {e}")
         return None
 
-# Messaging Functions
-def send_whatsapp_message(phone_number, message):
+def translate_message(text, target_lang):
+    try:
+        response = model.generate_content(f"Translate this to {target_lang}: {text}")
+        return response.text.strip()
+    except Exception as e:
+        logging.error(f"Translation error: {e}")
+        return text
+
+def send_whatsapp_message(user_id, message):
     if not twilio_client:
         return "WhatsApp not configured."
+    if user_id not in user_states or 'phone' not in user_states[user_id]:
+        return "Please register first to receive WhatsApp messages."
+    phone = user_states[user_id]['phone']
+    lang = user_states[user_id].get('language', DEFAULT_LANGUAGE)
+    translated_msg = translate_message(message, lang)
     try:
         msg = twilio_client.messages.create(
-            body=message,
+            body=translated_msg,
             from_=f"whatsapp:{TWILIO_PHONE_NUMBER}",
-            to=f"whatsapp:{phone_number}"
+            to=f"whatsapp:{phone}"
         )
-        return f"WhatsApp message sent to {phone_number}!"
+        return f"WhatsApp message sent to {phone}!"
     except Exception as e:
         logging.error(f"WhatsApp error: {e}")
-        return "Failed to send WhatsApp message."
+        return FALLBACK_RESPONSES["whatsapp"]
 
-# Load Sales Data
+# Data Management
+def load_inventory():
+    if os.path.exists(INVENTORY_PATH):
+        return pd.read_csv(INVENTORY_PATH)
+    else:
+        df = pd.DataFrame(columns=["Product", "Stock", "Price"])
+        df.to_csv(INVENTORY_PATH, index=False)
+        return df
+
+def update_inventory(product, quantity):
+    df = load_inventory()
+    if product in df['Product'].values:
+        df.loc[df['Product'] == product, 'Stock'] -= quantity
+        df.to_csv(INVENTORY_PATH, index=False)
+    else:
+        logging.error(f"Product {product} not found in inventory")
+
+def load_users():
+    if os.path.exists(USERS_PATH):
+        return pd.read_csv(USERS_PATH)
+    else:
+        df = pd.DataFrame(columns=["customer_id", "name", "email", "phone", "language", "address"])
+        df.to_csv(USERS_PATH, index=False)
+        return df
+
 def load_sales_data():
-    try:
-        if os.path.exists(SALES_DATA_PATH):
-            df = pd.read_csv(SALES_DATA_PATH, low_memory=False)
-            df['Order Date'] = pd.to_datetime(df['Order Date'], format='%m/%d/%y %H:%M', errors='coerce')
-            df.dropna(subset=['Order Date'], inplace=True)
-            df['Quantity Ordered'] = pd.to_numeric(df['Quantity Ordered'], errors='coerce').fillna(0).astype('Int64')
-            df['Price Each'] = pd.to_numeric(df['Price Each'], errors='coerce').fillna(0.0)
-            return df
-        elif os.path.exists(CUSTOMER_DATA_PATH):
-            df = pd.read_csv(CUSTOMER_DATA_PATH, low_memory=False)
-            df['invoice_date'] = pd.to_datetime(df['invoice_date'], errors='coerce')
-            df.dropna(subset=['invoice_date'], inplace=True)
-            df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).astype('Int64')
-            df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0.0)
-            df = df.rename(columns={
-                'invoice_date': 'Order Date',
-                'category': 'Product',
-                'quantity': 'Quantity Ordered',
-                'price': 'Price Each',
-                'shopping_mall': 'Purchase Address'
-            })
-            return df
-        else:
-            raise FileNotFoundError("No sales or customer data file found.")
-    except Exception as e:
-        logging.error(f"Error loading sales data: {e}")
-        return None
+    if os.path.exists(SALES_DATA_PATH):
+        df = pd.read_csv(SALES_DATA_PATH, low_memory=False)
+        df['Order Date'] = pd.to_datetime(df['Order Date'], format='%m/%d/%y %H:%M', errors='coerce')
+        df.dropna(subset=['Order Date'], inplace=True)
+        df['Quantity Ordered'] = pd.to_numeric(df['Quantity Ordered'], errors='coerce').fillna(0).astype('Int64')
+        df['Price Each'] = pd.to_numeric(df['Price Each'], errors='coerce').fillna(0.0)
+        return df
+    else:
+        df = pd.DataFrame(columns=["Order Date", "Product", "Quantity Ordered", "Price Each"])
+        df.to_csv(SALES_DATA_PATH, index=False)
+        return df
+
+def update_sales_data(product, quantity, price):
+    df = load_sales_data()
+    new_sale = pd.DataFrame({
+        "Order Date": [pd.Timestamp.now()],
+        "Product": [product],
+        "Quantity Ordered": [quantity],
+        "Price Each": [price]
+    })
+    df = pd.concat([df, new_sale], ignore_index=True)
+    df.to_csv(SALES_DATA_PATH, index=False)
 
 # Customer Registration
 def handle_customer_registration(user_id, text):
@@ -138,73 +176,54 @@ def handle_customer_registration(user_id, text):
                 'context': 'registered'
             }
             
-            welcome_msg = f"Welcome {name}! Registration successful."
-            whatsapp_response = send_whatsapp_message(phone, welcome_msg)
+            users_df = load_users()
+            new_user = pd.DataFrame([user_states[user_id]])
+            users_df = pd.concat([users_df, new_user], ignore_index=True)
+            users_df.to_csv(USERS_PATH, index=False)
+            
+            welcome_msg = f"Welcome {name} to GrowBizz!"
+            whatsapp_response = send_whatsapp_message(user_id, welcome_msg)
             return f"Registration successful! Customer ID: `{customer_id}`\n{whatsapp_response}"
         except Exception as e:
             logging.error(f"Registration error: {e}")
             return FALLBACK_RESPONSES["register"]
     return "Please use: `register: name, email, phone, language, address`"
 
-# Promotion Generation
-def generate_promotion(prompt, user_id):
-    img_byte_arr = image_gen.generate_promotion_image(prompt)
-    if img_byte_arr:
-        size = img_byte_arr.getbuffer().nbytes
-        logging.info(f"Generated promotion image, size: {size} bytes")
-        dm_channel = get_dm_channel(user_id)
-        if dm_channel:
-            client.files_upload_v2(
-                channels=dm_channel,
-                file=img_byte_arr,
-                filename=f"promotion_{str(uuid.uuid4())[:8]}.png",
-                title=f"Promotion: {prompt}"
-            )
-            logging.info(f"Uploaded promotion image to DM {dm_channel}")
-            return "Promotion image sent to your DM!"
-        else:
-            return "Failed to upload image: DM channel not available."
-    else:
-        logging.error("Promotion image generation failed")
-        return FALLBACK_RESPONSES["promotion"]
+# Purchase Processing
+def process_purchase(user_id, text):
+    if user_id not in user_states or 'customer_id' not in user_states[user_id]:
+        return "Please register first using: `register: name, email, phone, language, address`"
 
-# Weekly Sales Analysis
-def generate_weekly_sales_analysis(user_id):
-    df = load_sales_data()
-    if df is None:
-        return FALLBACK_RESPONSES["weekly analysis"]
+    if "purchase:" not in text.lower():
+        return "Please use: `purchase: product, quantity`"
 
-    plt.figure(figsize=(10, 5))
-    weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
-    plt.plot(weekly_sales.index, weekly_sales.values, marker='o')
-    plt.title("Weekly Sales Trend")
-    img_byte_arr = BytesIO()
-    plt.savefig(img_byte_arr, format='PNG')
-    img_byte_arr.seek(0)
-    plt.close()
+    try:
+        _, details = text.lower().split("purchase:", 1)
+        product, quantity = [x.strip() for x in details.split(',', 1)]
+        quantity = int(quantity)
 
-    size = img_byte_arr.getbuffer().nbytes
-    logging.info(f"Generated weekly sales image, size: {size} bytes")
+        inventory = load_inventory()
+        if product not in inventory['Product'].values:
+            return f"Product '{product}' not found in inventory."
+        
+        stock = inventory[inventory['Product'] == product]['Stock'].iloc[0]
+        if stock < quantity:
+            return f"Insufficient stock for '{product}'. Available: {stock}"
 
-    if size > 0:
-        dm_channel = get_dm_channel(user_id)
-        if dm_channel:
-            client.files_upload_v2(
-                channels=dm_channel,
-                file=img_byte_arr,
-                filename="weekly_sales.png",
-                title="Weekly Sales Trend"
-            )
-            logging.info(f"Uploaded weekly sales image to DM {dm_channel}")
-            return "Weekly analysis sent to your DM!"
-        else:
-            return "Failed to upload image: DM channel not available."
-    else:
-        logging.error("Weekly sales image is empty")
-        return FALLBACK_RESPONSES["weekly analysis"]
+        price = inventory[inventory['Product'] == product]['Price'].iloc[0]
+        update_inventory(product, quantity)
+        update_sales_data(product, quantity, price)
+
+        invoice_msg = generate_invoice(user_states[user_id]['customer_id'], {'product_name': product, 'price': price * quantity}, user_id)
+        purchase_msg = f"Purchase confirmed: {quantity} x {product} for INR {price * quantity}"
+        whatsapp_response = send_whatsapp_message(user_id, purchase_msg)
+        return f"{purchase_msg}\n{invoice_msg}\n{whatsapp_response}"
+    except Exception as e:
+        logging.error(f"Purchase error: {e}")
+        return FALLBACK_RESPONSES["purchase"]
 
 # Invoice Generation
-def generate_invoice(customer_id=None, product=None, user_id=None):
+def generate_invoice(customer_id, product, user_id):
     class InvoicePDF(FPDF):
         def header(self):
             self.set_font("Arial", "B", 16)
@@ -228,16 +247,13 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
     try:
         logging.info(f"Generating invoice for user {user_id}")
         header = ["Product", "Qty", "Price", "Total"]
-        if customer_id and product:
-            invoice_items = [[product['product_name'], 1, product['price'], product['price']]]
-        else:
-            invoice_items = [["Sample Product", 1, 100.00, 100.00]]
+        invoice_items = [[product['product_name'], 1, product['price'], product['price']]]
 
         pdf.add_table(header, invoice_items)
         pdf_bytes = pdf.output(dest='S').encode('latin-1')
         pdf_byte_arr = BytesIO(pdf_bytes)
         pdf_byte_arr.seek(0)
-        filename = f"invoice_{customer_id or 'sample'}_{str(uuid.uuid4())[:8]}.pdf"
+        filename = f"invoice_{customer_id}_{str(uuid.uuid4())[:8]}.pdf"
 
         size = pdf_byte_arr.getbuffer().nbytes
         logging.info(f"Generated PDF size: {size} bytes")
@@ -262,34 +278,140 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
         logging.error(f"Invoice generation error: {e}")
         return FALLBACK_RESPONSES["invoice"]
 
-# Sales Insights
+# Promotion Generation
+def generate_promotion(prompt, user_id):
+    try:
+        img = Image.new('RGB', (400, 200), color='white')
+        d = ImageDraw.Draw(img)
+        font = ImageFont.load_default()
+        d.text((10, 10), f"Promotion: {prompt}", fill='black', font=font)
+        img_byte_arr = BytesIO()
+        img.save(img_byte_arr, format='PNG')
+        img_byte_arr.seek(0)
+
+        size = img_byte_arr.getbuffer().nbytes
+        logging.info(f"Generated promotion image, size: {size} bytes")
+
+        if size > 0:
+            dm_channel = get_dm_channel(user_id)
+            if dm_channel:
+                client.files_upload_v2(
+                    channels=dm_channel,
+                    file=img_byte_arr,
+                    filename=f"promotion_{str(uuid.uuid4())[:8]}.png",
+                    title=f"Promotion: {prompt}"
+                )
+                logging.info(f"Uploaded promotion image to DM {dm_channel}")
+                return f"Promotion generated and sent to your DM!\nText: {prompt}"
+            else:
+                return "Failed to upload image: DM channel not available."
+        else:
+            logging.error("Promotion image is empty")
+            return FALLBACK_RESPONSES["promotion"]
+    except Exception as e:
+        logging.error(f"Promotion error: {e}")
+        return FALLBACK_RESPONSES["promotion"]
+
+# Weekly Sales Analysis
+def generate_weekly_sales_analysis(user_id):
+    df = load_sales_data()
+    if df.empty:
+        return FALLBACK_RESPONSES["weekly analysis"]
+
+    # Weekly Sales Graph
+    plt.figure(figsize=(10, 5))
+    weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
+    plt.plot(weekly_sales.index, weekly_sales.values, marker='o')
+    plt.title("Weekly Sales Trend")
+    img_byte_arr1 = BytesIO()
+    plt.savefig(img_byte_arr1, format='PNG')
+    img_byte_arr1.seek(0)
+    plt.close()
+
+    # Overall Sales Graph
+    plt.figure(figsize=(10, 5))
+    plt.plot(df['Order Date'], df['Price Each'].cumsum(), marker='o')
+    plt.title("Overall Sales Trend")
+    img_byte_arr2 = BytesIO()
+    plt.savefig(img_byte_arr2, format='PNG')
+    img_byte_arr2.seek(0)
+    plt.close()
+
+    # Normal Distribution Graph
+    plt.figure(figsize=(10, 5))
+    sales = df['Price Each']
+    mu, sigma = sales.mean(), sales.std()
+    x = np.linspace(mu - 3*sigma, mu + 3*sigma, 100)
+    plt.plot(x, norm.pdf(x, mu, sigma))
+    plt.title("Sales Distribution")
+    img_byte_arr3 = BytesIO()
+    plt.savefig(img_byte_arr3, format='PNG')
+    img_byte_arr3.seek(0)
+    plt.close()
+
+    sizes = [img_byte_arr1.getbuffer().nbytes, img_byte_arr2.getbuffer().nbytes, img_byte_arr3.getbuffer().nbytes]
+    logging.info(f"Generated weekly sales images, sizes: {sizes}")
+
+    dm_channel = get_dm_channel(user_id)
+    if dm_channel:
+        for i, img in enumerate([img_byte_arr1, img_byte_arr2, img_byte_arr3], 1):
+            client.files_upload_v2(
+                channels=dm_channel,
+                file=img,
+                filename=f"weekly_analysis_{i}_{str(uuid.uuid4())[:8]}.png",
+                title=f"Weekly Analysis Graph {i}"
+            )
+        logging.info(f"Uploaded weekly sales images to DM {dm_channel}")
+        return "Weekly sales analysis (3 graphs) sent to your DM!"
+    else:
+        return "Failed to upload images: DM channel not available."
+
+# Sales Insights and Recommendations
 def generate_sales_insights():
     df = load_sales_data()
-    if df is None:
-        return FALLBACK_RESPONSES["simple insights"]
-    
+    inventory = load_inventory()
+    if df.empty or inventory.empty:
+        return FALLBACK_RESPONSES["insights"]
+
     try:
         total_sales = df["Price Each"].sum()
         avg_sale = df["Price Each"].mean()
-        best_selling_product = df.groupby("Product")["Quantity Ordered"].sum().idxmax()
+        best_selling = df.groupby("Product")["Quantity Ordered"].sum().idxmax()
+        
+        # Weekly trend analysis
+        weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
+        trend = "increasing" if weekly_sales.diff().mean() > 0 else "decreasing"
+        
+        # Seasonal trends (simplified using pytrends)
+        pytrends.build_payload([best_selling], timeframe='today 3-m')
+        trends = pytrends.interest_over_time()
+        seasonal_factor = trends[best_selling].mean() / 100 if best_selling in trends else 1
+
+        # Mathematical model for recommendations
+        recommendations = []
+        for product in inventory['Product']:
+            stock = inventory[inventory['Product'] == product]['Stock'].iloc[0]
+            price = inventory[inventory['Product'] == product]['Price'].iloc[0]
+            sales = df[df['Product'] == product]['Quantity Ordered'].sum()
+            demand_rate = sales / len(weekly_sales) if sales > 0 else 0.1
+            if stock < demand_rate * seasonal_factor:
+                recommendations.append(f"Stock up {product} (current: {stock}, suggested: {int(demand_rate * seasonal_factor * 2)})")
+            elif stock > demand_rate * 5:
+                recommendations.append(f"Decrease price of {product} (current stock: {stock}, low demand)")
+            elif trend == "increasing" and sales > avg_sale:
+                recommendations.append(f"Increase price of {product} (high demand)")
+
         return f"📊 Sales Insights:\n" \
                f"🔹 Total Sales: INR {total_sales:,.2f}\n" \
                f"🔹 Average Sale: INR {avg_sale:,.2f}\n" \
-               f"🔥 Best Selling Product: {best_selling_product}"
+               f"🔥 Best Selling: {best_selling}\n" \
+               f"📈 Trend: {trend}\n" \
+               f"Recommendations:\n" + "\n".join(recommendations) if recommendations else "No specific recommendations."
     except Exception as e:
         logging.error(f"Insights error: {e}")
-        return FALLBACK_RESPONSES["simple insights"]
+        return FALLBACK_RESPONSES["insights"]
 
-# Basic Query Processing
-def process_basic_query(text):
-    try:
-        response = model.generate_content(f"Respond to this user query: {text}")
-        return response.text.strip()
-    except Exception as e:
-        logging.error(f"Basic query processing error: {e}")
-        return "Sorry, I couldn’t process that right now. Try something else!"
-
-# Query Processing with State Management
+# Query Processing
 def process_query(text, user_id, event_channel):
     text = text.lower().strip()
     if user_id not in user_states:
@@ -302,6 +424,8 @@ def process_query(text, user_id, event_channel):
     try:
         if "register" in text:
             return handle_customer_registration(user_id, text)
+        elif "purchase:" in text:
+            return process_purchase(user_id, text)
         elif "weekly analysis" in text:
             state['context'] = 'idle'
             return generate_weekly_sales_analysis(user_id)
@@ -313,15 +437,15 @@ def process_query(text, user_id, event_channel):
             state['context'] = 'idle'
             return generate_promotion(prompt, user_id)
         elif "whatsapp" in text:
-            message = "Hello, this is a test message from the bot!"
+            message = text.replace("whatsapp", "").strip() or "Hello from GrowBizz!"
             state['context'] = 'idle'
-            return send_whatsapp_message(WHATSAPP_NUMBER, message)
+            return send_whatsapp_message(user_id, message)
         elif "invoice" in text or "generate invoice" in text:
             state['context'] = 'idle'
-            return generate_invoice(user_id=user_id)
+            return generate_invoice(None, None, user_id)
         else:
             state['context'] = 'idle'
-            return process_basic_query(text)  # Handle normal user prompts
+            return model.generate_content(f"Respond to this user query: {text}").text.strip()
     except Exception as e:
         logging.error(f"Query processing error: {e}")
         state['context'] = 'idle'
