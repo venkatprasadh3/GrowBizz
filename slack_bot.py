@@ -27,12 +27,13 @@ from io import BytesIO
 from twilio.rest import Client
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from PIL import Image, ImageDraw
 
 # Configuration and Constants
 sns.set_style("darkgrid")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Hardcoded Channel ID (for reference, but we'll prioritize DMs)
+# Hardcoded Channel ID (unused in uploads, kept for reference)
 DEFAULT_CHANNEL_ID = os.getenv("DEFAULT_CHANNEL_ID", "C08586QDFE2")
 
 # Application Constants
@@ -51,7 +52,7 @@ TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")
 DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "English")
 
 # Global Variables
-user_states = {}  # Tracks user-specific conversation state: {user_id: {'last_message': str, 'context': str}}
+user_states = {}  # {user_id: {'last_message': str, 'context': str, 'dm_channel': str}}
 client = WebClient(token=SLACK_BOT_TOKEN)
 model = genai.GenerativeModel("gemini-1.5-flash")
 pytrends = TrendReq(hl='en-IN', tz=330)
@@ -70,8 +71,19 @@ FALLBACK_RESPONSES = {
     "invoice": "Sorry, invoice generation failed. Please try again.",
     "default": "Oops! Something went wrong. Try: register, purchase, weekly analysis, insights, simple insights, promotion, whatsapp, email, invoice",
     "not_in_channel": "I can't respond here. Please invite me to this channel with `/invite @YourBotName` or send me a direct message!",
-    "channel_not_found": "Channel issue detected. Files sent to your DM instead."
+    "channel_not_found": "Specified channel not found. File sent to your DM instead."
 }
+
+# Helper to Get DM Channel
+def get_dm_channel(user_id):
+    try:
+        response = client.conversations_open(users=user_id)
+        dm_channel = response['channel']['id']
+        logging.info(f"Opened DM channel {dm_channel} for user {user_id}")
+        return dm_channel
+    except SlackApiError as e:
+        logging.error(f"Failed to open DM channel for {user_id}: {e}")
+        return None
 
 # Messaging Functions
 def send_whatsapp_message(phone_number, message):
@@ -218,10 +230,9 @@ def handle_customer_registration(user_id, text):
             return FALLBACK_RESPONSES["register"]
     return "Please complete registration with: `register: name, email, phone, language, address`"
 
-# Promotion Generation (Placeholder due to Gemini limitation)
-def generate_promotion_image(prompt, user_id):
+# Promotion Generation
+def generate_promotion_image(prompt, target_channel, user_id):
     try:
-        from PIL import Image, ImageDraw
         discount_percentage = "50"
         if " " in prompt:
             parts = prompt.split()
@@ -231,7 +242,7 @@ def generate_promotion_image(prompt, user_id):
                     prompt = " ".join(p for p in parts if p != part)
                     break
         
-        logging.info(f"Generating placeholder promotion image for '{prompt}' with {discount_percentage}%")
+        logging.info(f"Generating promotion image for '{prompt}' with {discount_percentage}%")
         img = Image.new('RGB', (400, 200), color='white')
         d = ImageDraw.Draw(img)
         d.text((10, 10), f"{discount_percentage}% OFF {prompt}", fill='black')
@@ -240,15 +251,32 @@ def generate_promotion_image(prompt, user_id):
         img_byte_arr.seek(0)
         
         if img_byte_arr.getbuffer().nbytes > 0:
-            logging.info(f"Generated promotion image, size: {img_byte_arr.getbuffer().nbytes} bytes")
-            client.files_upload_v2(
-                channels=user_id,
-                file=img_byte_arr,
-                filename=f"promotion_{str(uuid.uuid4())[:8]}.png",
-                title=f"Promotion: {prompt}"
-            )
-            logging.info(f"Uploaded promotion image to user DM {user_id}")
-            return True
+            try:
+                client.files_upload_v2(
+                    channels=target_channel,
+                    file=img_byte_arr,
+                    filename=f"promotion_{str(uuid.uuid4())[:8]}.png",
+                    title=f"Promotion: {prompt}"
+                )
+                logging.info(f"Generated promotion image, size: {img_byte_arr.getbuffer().nbytes} bytes, uploaded to channel {target_channel}")
+                return True
+            except SlackApiError as e:
+                if e.response["error"] == "channel_not_found":
+                    dm_channel = get_dm_channel(user_id)
+                    if dm_channel:
+                        client.files_upload_v2(
+                            channels=dm_channel,
+                            file=img_byte_arr,
+                            filename=f"promotion_{str(uuid.uuid4())[:8]}.png",
+                            title=f"Promotion: {prompt}"
+                        )
+                        logging.info(f"Generated promotion image, size: {img_byte_arr.getbuffer().nbytes} bytes, uploaded to DM {dm_channel}")
+                        return True
+                    else:
+                        logging.error(f"No DM channel available for {user_id}")
+                        return False
+                else:
+                    raise
         else:
             logging.warning(f"Generated promotion image is empty")
             return False
@@ -256,11 +284,11 @@ def generate_promotion_image(prompt, user_id):
         logging.error(f"Promotion image generation failed: {e}")
         return False
 
-def generate_promotion(prompt, user_id):
+def generate_promotion(prompt, user_id, target_channel):
     try:
-        text_msg = f"🚀 Promotion Alert! Get discount on {prompt}!\nImage sent to your DM."
+        text_msg = f"🚀 Promotion Alert! Get discount on {prompt}!\nImage uploaded to <#{target_channel}>."
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(generate_promotion_image, prompt, user_id)
+            future = executor.submit(generate_promotion_image, prompt, target_channel, user_id)
             if future.result():
                 return text_msg
             return f"🚀 Promotion Alert! Get discount on {prompt}!\n(Image generation failed; enjoy the deal anyway!)"
@@ -269,13 +297,13 @@ def generate_promotion(prompt, user_id):
         return FALLBACK_RESPONSES["promotion"]
 
 # Weekly Sales Analysis
-def generate_weekly_sales_analysis(user_id):
+def generate_weekly_sales_analysis(user_id, target_channel):
     df = load_sales_data()
     if df is None:
         return FALLBACK_RESPONSES["weekly analysis"]
     
     try:
-        logging.info(f"Generating weekly analysis for user {user_id}")
+        logging.info(f"Generating weekly analysis for user {user_id}, target_channel {target_channel}")
         # Weekly Trend
         weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
         plt.figure(figsize=(12, 6))
@@ -316,19 +344,38 @@ def generate_weekly_sales_analysis(user_id):
         dist_byte_arr.seek(0)
         plt.close()
 
-        for arr, name in [(weekly_byte_arr, "weekly_trend.png"), (overall_byte_arr, "overall_trend.png"), (dist_byte_arr, "sales_distribution.png")]:
-            if arr.getbuffer().nbytes > 0:
-                logging.info(f"Generated {name}, size: {arr.getbuffer().nbytes} bytes")
-                client.files_upload_v2(
-                    channels=user_id,
-                    file=arr,
-                    filename=name,
-                    title=name.split('.')[0].replace('_', ' ').title()
-                )
-                logging.info(f"Uploaded {name} to user DM {user_id}")
+        upload_channel = target_channel
+        try:
+            for arr, name in [(weekly_byte_arr, "weekly_trend.png"), (overall_byte_arr, "overall_trend.png"), (dist_byte_arr, "sales_distribution.png")]:
+                if arr.getbuffer().nbytes > 0:
+                    client.files_upload_v2(
+                        channels=target_channel,
+                        file=arr,
+                        filename=name,
+                        title=name.split('.')[0].replace('_', ' ').title()
+                    )
+                    logging.info(f"Generated {name}, size: {arr.getbuffer().nbytes} bytes, uploaded to channel {target_channel}")
+                else:
+                    logging.warning(f"{name} is empty")
+        except SlackApiError as e:
+            if e.response["error"] == "channel_not_found":
+                dm_channel = get_dm_channel(user_id)
+                if dm_channel:
+                    upload_channel = dm_channel
+                    for arr, name in [(weekly_byte_arr, "weekly_trend.png"), (overall_byte_arr, "overall_trend.png"), (dist_byte_arr, "sales_distribution.png")]:
+                        if arr.getbuffer().nbytes > 0:
+                            client.files_upload_v2(
+                                channels=dm_channel,
+                                file=arr,
+                                filename=name,
+                                title=name.split('.')[0].replace('_', ' ').title()
+                            )
+                            logging.info(f"Generated {name}, size: {arr.getbuffer().nbytes} bytes, uploaded to DM {dm_channel}")
+                else:
+                    return "Failed to upload files: DM channel not available."
             else:
-                logging.warning(f"{name} is empty")
-        return "Weekly analysis generated! Check your DM for files."
+                raise
+        return f"Weekly analysis generated! Check <#{upload_channel}> for files."
     except Exception as e:
         logging.error(f"Analysis error: {e}")
         return FALLBACK_RESPONSES["weekly analysis"]
@@ -346,7 +393,7 @@ def get_user_language(user_id):
     return user_states.get(user_id, {}).get('language', DEFAULT_LANGUAGE)
 
 # Purchase Processing
-def process_purchase(product_id, user_id):
+def process_purchase(product_id, user_id, target_channel):
     if user_id not in user_states or 'customer_id' not in user_states[user_id]:
         user_states[user_id] = {'last_message': f"purchase: {product_id}", 'context': 'purchase_prompt'}
         return "Please register first using: `register: name, email, phone, language, address`"
@@ -366,7 +413,7 @@ def process_purchase(product_id, user_id):
             return "Product not found."
         
         sale_id = str(uuid.uuid4())
-        invoice_response = generate_invoice(user['customer_id'], {'product_name': product['Product'], 'price': product['Price Each']}, user_id)
+        invoice_response = generate_invoice(user['customer_id'], {'product_name': product['Product'], 'price': product['Price Each']}, target_channel, user_id)
         message = f"Purchase confirmed: {product['Product']} for INR {product['Price Each']}"
         translated_msg = translate_message(message, get_user_language(user_id))
         
@@ -378,7 +425,7 @@ def process_purchase(product_id, user_id):
         return FALLBACK_RESPONSES["purchase"]
 
 # Invoice Generation
-def generate_invoice(customer_id=None, product=None, user_id=None):
+def generate_invoice(customer_id=None, product=None, target_channel=None, user_id=None):
     class InvoicePDF(FPDF):
         def header(self):
             try:
@@ -430,7 +477,7 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
     pdf.add_page()
 
     try:
-        logging.info(f"Generating invoice for user {user_id}")
+        logging.info(f"Generating invoice for user {user_id}, target_channel {target_channel}")
         if customer_id and product:
             user = user_states.get(next((uid for uid, data in user_states.items() if data['customer_id'] == customer_id), None), {})
             company_info = "PSG College of Technology\nCoimbatore, Tamil Nadu\nPhone: 123-456-7890"
@@ -467,15 +514,31 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
         filename = f"invoice_{customer_id or 'dynamic'}_{str(uuid.uuid4())[:8]}.pdf"
 
         if pdf_byte_arr.getbuffer().nbytes > 0:
-            logging.info(f"Generated invoice, size: {pdf_byte_arr.getbuffer().nbytes} bytes")
-            client.files_upload_v2(
-                channels=user_id,
-                file=pdf_byte_arr,
-                filename=filename,
-                title="Invoice"
-            )
-            logging.info(f"Uploaded invoice to user DM {user_id}")
-            return "Invoice generated and sent to your DM!"
+            try:
+                client.files_upload_v2(
+                    channels=target_channel,
+                    file=pdf_byte_arr,
+                    filename=filename,
+                    title="Invoice"
+                )
+                logging.info(f"Generated invoice, size: {pdf_byte_arr.getbuffer().nbytes} bytes, uploaded to channel {target_channel}")
+                return f"Invoice generated and uploaded to <#{target_channel}>!"
+            except SlackApiError as e:
+                if e.response["error"] == "channel_not_found":
+                    dm_channel = get_dm_channel(user_id)
+                    if dm_channel:
+                        client.files_upload_v2(
+                            channels=dm_channel,
+                            file=pdf_byte_arr,
+                            filename=filename,
+                            title="Invoice"
+                        )
+                        logging.info(f"Generated invoice, size: {pdf_byte_arr.getbuffer().nbytes} bytes, uploaded to DM {dm_channel}")
+                        return "Invoice generated and sent to your DM (specified channel not found)."
+                    else:
+                        return "Failed to upload invoice: DM channel not available."
+                else:
+                    raise
         else:
             logging.error("Generated invoice is empty")
             return FALLBACK_RESPONSES["invoice"] + " (File was empty)"
@@ -502,61 +565,62 @@ def generate_sales_insights():
         return FALLBACK_RESPONSES["simple insights"]
 
 # Query Processing with State Management
-def process_query(text, user_id):
+def process_query(text, user_id, event_channel):
     text = text.lower().strip()
     if user_id not in user_states:
         user_states[user_id] = {'last_message': '', 'context': 'idle'}
     
     state = user_states[user_id]
     state['last_message'] = text
-    logging.info(f"Processing query: '{text}' for user {user_id}, context: {state['context']}")
+    logging.info(f"Processing query: '{text}' for user {user_id}, context: {state['context']}, event_channel: {event_channel}")
+
+    # Determine target_channel
+    parts = text.split(" in ")
+    if len(parts) == 2:
+        command = parts[0].strip()
+        target_channel = parts[1].strip()
+    else:
+        command = text.strip()
+        target_channel = event_channel
 
     try:
-        if "register" in text:
-            return handle_customer_registration(user_id, text)
-        elif "purchase" in text:
-            if ":" in text:
-                product_id = text.split(":")[1].strip()
-                return process_purchase(product_id, user_id)
-            else:
-                state['context'] = 'purchase_prompt'
-                return "Please specify a product with: `purchase: product_name`"
-        elif "weekly analysis" in text:
+        if "register" in command:
+            return handle_customer_registration(user_id, command)
+        elif "purchase:" in command:
+            product_id = command.split(":")[1].strip()
+            return process_purchase(product_id, user_id, target_channel)
+        elif "weekly analysis" in command:
             state['context'] = 'idle'
-            return generate_weekly_sales_analysis(user_id)
-        elif "insights" in text or "simple insights" in text:
+            return generate_weekly_sales_analysis(user_id, target_channel)
+        elif "insights" in command or "simple insights" in command:
             state['context'] = 'idle'
             return generate_sales_insights()
-        elif "promotion" in text:
-            if ":" in text:
-                prompt = text.replace("promotion:", "").strip()
-                state['context'] = 'idle'
-                return generate_promotion(prompt, user_id)
-            else:
-                state['context'] = 'promotion_prompt'
-                return "Please specify a promotion with: `promotion: item discount%`"
-        elif "whatsapp" in text:
+        elif "promotion:" in command:
+            prompt = command.replace("promotion:", "").strip()
+            state['context'] = 'idle'
+            return generate_promotion(prompt, user_id, target_channel)
+        elif "whatsapp" in command:
             message = "Hello, this is a test message from the bot!"
-            if "in " in text:
-                lang = text.split("in ")[-1].strip()
+            if "in " in command:
+                lang = command.split("in ")[-1].strip()
                 message = translate_message(message, lang)
             state['context'] = 'idle'
             return send_whatsapp_message(WHATSAPP_NUMBER, message)
-        elif "email" in text:
+        elif "email" in command:
             df = load_sales_data()
             if df is None:
                 return FALLBACK_RESPONSES["email"]
             top_customers = df.groupby("Purchase Address")["Price Each"].sum().nlargest(3)
             subject = "Top Customers Report"
             body = f"Top 3 customers:\n{top_customers.to_string()}"
-            if "in " in text:
-                lang = text.split("in ")[-1].strip()
+            if "in " in command:
+                lang = command.split("in ")[-1].strip()
                 body = translate_message(body, lang)
             state['context'] = 'idle'
             return send_email(subject, body, [EMAIL_FROM], EMAIL_FROM, EMAIL_PASSWORD)
-        elif "invoice" in text or "generate invoice" in text:
+        elif "invoice" in command or "generate invoice" in command:
             state['context'] = 'idle'
-            return generate_invoice(user_id=user_id)
+            return generate_invoice(target_channel=target_channel, user_id=user_id)
         elif state['context'] == 'purchase_prompt':
             return "Please specify a product with: `purchase: product_name`"
         elif state['context'] == 'promotion_prompt':
@@ -602,7 +666,7 @@ if __name__ == "__main__":
         text = event['text']
         channel = event['channel']
         logging.info(f"Received message: '{text}' from user {user_id} in channel {channel}")
-        response = process_query(text, user_id)
+        response = process_query(text, user_id, channel)
         try:
             say(response)
         except SlackApiError as e:
