@@ -88,18 +88,17 @@ def get_dm_channel(user_id):
 # Messaging Functions
 def send_whatsapp_message(phone_number, message):
     if not twilio_client:
-        return FALLBACK_RESPONSES["whatsapp"] + " (Twilio not configured)"
+        return "WhatsApp not configured."
     try:
         msg = twilio_client.messages.create(
             body=message,
             from_=f"whatsapp:{TWILIO_PHONE_NUMBER}",
             to=f"whatsapp:{phone_number}"
         )
-        logging.info(f"WhatsApp message sent to {phone_number}, SID: {msg.sid}")
-        return f"WhatsApp message sent to {phone_number} successfully! (SID: {msg.sid})"
+        return f"WhatsApp message sent to {phone_number}!"
     except Exception as e:
-        logging.error(f"Error sending WhatsApp message: {e}")
-        return FALLBACK_RESPONSES["whatsapp"]
+        logging.error(f"WhatsApp error: {e}")
+        return "Failed to send WhatsApp message."
 
 def send_email(subject, body, to_emails, from_email, password, images=None, attachments=None):
     if not EMAIL_PASSWORD:
@@ -187,29 +186,18 @@ def handle_customer_registration(user_id, text):
         user_states[user_id] = {'last_message': '', 'context': 'idle'}
 
     state = user_states[user_id]
-    state['last_message'] = text
-
-    if state['context'] == 'idle' and "register:" not in text.lower():
-        state['context'] = 'register_prompt'
-        return "Please provide registration details in format:\n`register: name, email@example.com, +1234567890, English, 123 Street Name, City`"
+    if 'customer_id' in state:
+        return f"You are already registered with Customer ID: `{state['customer_id']}`."
 
     if "register:" in text.lower():
         try:
             _, details = text.lower().split("register:", 1)
-            parts = [x.strip() for x in details.split(',', 5)]
-            if len(parts) != 5:
-                return "Invalid format. Need: name, email, phone, language, address"
+            name, email, phone, language, address = [x.strip() for x in details.split(',', 4)]
             
-            name, email, phone, language, address = parts
+            # Clean phone number
+            phone = re.sub(r'<tel:|\|.*$', '', phone).strip().replace('+', '')
+            phone = '+' + phone if not phone.startswith('+') else phone
             
-            email = re.sub(r'mailto:|\|.*$', '', email)
-            phone = re.sub(r'tel:|\|.*$', '', phone)
-            
-            if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-                return "Invalid email format."
-            if len(phone) > 20:
-                return "Phone number too long."
-
             customer_id = str(uuid.uuid4())
             user_states[user_id] = {
                 'customer_id': customer_id,
@@ -218,17 +206,16 @@ def handle_customer_registration(user_id, text):
                 'phone': phone,
                 'language': language,
                 'address': address,
-                'last_message': text,
                 'context': 'registered'
             }
             
-            welcome_msg = translate_message(f"Welcome {name}! Registration successful.", language)
+            welcome_msg = f"Welcome {name}! Registration successful."
             whatsapp_response = send_whatsapp_message(phone, welcome_msg)
             return f"Registration successful! Customer ID: `{customer_id}`\n{whatsapp_response}"
         except Exception as e:
             logging.error(f"Registration error: {e}")
-            return FALLBACK_RESPONSES["register"]
-    return "Please complete registration with: `register: name, email, phone, language, address`"
+            return "Sorry, registration failed."
+    return "Please use: `register: name, email, phone, language, address`"
 
 # Promotion Generation
 def generate_promotion_image(prompt, target_channel, user_id):
@@ -285,100 +272,51 @@ def generate_promotion_image(prompt, target_channel, user_id):
         return False
 
 def generate_promotion(prompt, user_id, target_channel):
-    try:
-        text_msg = f"🚀 Promotion Alert! Get discount on {prompt}!\nImage uploaded to <#{target_channel}>."
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(generate_promotion_image, prompt, target_channel, user_id)
-            if future.result():
-                return text_msg
-            return f"🚀 Promotion Alert! Get discount on {prompt}!\n(Image generation failed; enjoy the deal anyway!)"
-    except Exception as e:
-        logging.error(f"Promotion generation failed: {e}")
-        return FALLBACK_RESPONSES["promotion"]
+    img = Image.new('RGB', (400, 200), color='white')
+    d = ImageDraw.Draw(img)
+    d.text((10, 10), f"50% OFF {prompt}", fill='black')
+    img_byte_arr = BytesIO()
+    img.save(img_byte_arr, format='PNG')
+    img_byte_arr.seek(0)
+
+    if img_byte_arr.getbuffer().nbytes > 0:
+        client.files_upload_v2(
+            channels=target_channel,
+            file=img_byte_arr,
+            filename=f"promotion_{str(uuid.uuid4())[:8]}.png",
+            title=f"Promotion: {prompt}"
+        )
+        return f"Promotion uploaded to <#{target_channel}>!"
+    else:
+        logging.error("Promotion image is empty")
+        return "Promotion generation failed. (Image was empty)"
 
 # Weekly Sales Analysis
 def generate_weekly_sales_analysis(user_id, target_channel):
     df = load_sales_data()
     if df is None:
-        return FALLBACK_RESPONSES["weekly analysis"]
-    
-    try:
-        logging.info(f"Generating weekly analysis for user {user_id}, target_channel {target_channel}")
-        # Weekly Trend
-        weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
-        plt.figure(figsize=(12, 6))
-        plt.plot(weekly_sales.index, weekly_sales.values, marker='o', linestyle='-', color='#4CAF50')
-        plt.title('Weekly Sales Trend')
-        plt.xlabel('Week')
-        plt.ylabel('Sales (INR)')
-        plt.grid(True)
-        weekly_byte_arr = BytesIO()
-        plt.savefig(weekly_byte_arr, format='PNG')
-        weekly_byte_arr.seek(0)
-        plt.close()
+        return "Weekly analysis unavailable. Data might be missing."
 
-        # Overall Trend
-        plt.figure(figsize=(12, 6))
-        plt.plot(df['Order Date'], df['Price Each'].cumsum(), color='#2196F3')
-        plt.title('Overall Sales Trend')
-        plt.xlabel('Date')
-        plt.ylabel('Cumulative Sales (INR)')
-        plt.grid(True)
-        overall_byte_arr = BytesIO()
-        plt.savefig(overall_byte_arr, format='PNG')
-        overall_byte_arr.seek(0)
-        plt.close()
+    plt.figure(figsize=(10, 5))
+    weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
+    plt.plot(weekly_sales.index, weekly_sales.values, marker='o')
+    plt.title("Weekly Sales Trend")
+    img_byte_arr = BytesIO()
+    plt.savefig(img_byte_arr, format='PNG')
+    img_byte_arr.seek(0)
+    plt.close()
 
-        # Sales Distribution
-        mu, std = norm.fit(df['Price Each'].dropna())
-        plt.figure(figsize=(10, 6))
-        sns.histplot(df['Price Each'], kde=True, stat="density", color='#2196F3')
-        x = np.linspace(df['Price Each'].min(), df['Price Each'].max(), 100)
-        plt.plot(x, norm.pdf(x, mu, std), 'r-', lw=2, label=f'Normal fit (μ={mu:.2f}, σ={std:.2f})')
-        plt.title('Sales Distribution with Normal Fit')
-        plt.xlabel('Sales Amount (INR)')
-        plt.ylabel('Density')
-        plt.legend()
-        dist_byte_arr = BytesIO()
-        plt.savefig(dist_byte_arr, format='PNG')
-        dist_byte_arr.seek(0)
-        plt.close()
-
-        upload_channel = target_channel
-        try:
-            for arr, name in [(weekly_byte_arr, "weekly_trend.png"), (overall_byte_arr, "overall_trend.png"), (dist_byte_arr, "sales_distribution.png")]:
-                if arr.getbuffer().nbytes > 0:
-                    client.files_upload_v2(
-                        channels=target_channel,
-                        file=arr,
-                        filename=name,
-                        title=name.split('.')[0].replace('_', ' ').title()
-                    )
-                    logging.info(f"Generated {name}, size: {arr.getbuffer().nbytes} bytes, uploaded to channel {target_channel}")
-                else:
-                    logging.warning(f"{name} is empty")
-        except SlackApiError as e:
-            if e.response["error"] == "channel_not_found":
-                dm_channel = get_dm_channel(user_id)
-                if dm_channel:
-                    upload_channel = dm_channel
-                    for arr, name in [(weekly_byte_arr, "weekly_trend.png"), (overall_byte_arr, "overall_trend.png"), (dist_byte_arr, "sales_distribution.png")]:
-                        if arr.getbuffer().nbytes > 0:
-                            client.files_upload_v2(
-                                channels=dm_channel,
-                                file=arr,
-                                filename=name,
-                                title=name.split('.')[0].replace('_', ' ').title()
-                            )
-                            logging.info(f"Generated {name}, size: {arr.getbuffer().nbytes} bytes, uploaded to DM {dm_channel}")
-                else:
-                    return "Failed to upload files: DM channel not available."
-            else:
-                raise
-        return f"Weekly analysis generated! Check <#{upload_channel}> for files."
-    except Exception as e:
-        logging.error(f"Analysis error: {e}")
-        return FALLBACK_RESPONSES["weekly analysis"]
+    if img_byte_arr.getbuffer().nbytes > 0:
+        client.files_upload_v2(
+            channels=target_channel,
+            file=img_byte_arr,
+            filename="weekly_sales.png",
+            title="Weekly Sales Trend"
+        )
+        return f"Weekly analysis uploaded to <#{target_channel}>!"
+    else:
+        logging.error("Weekly analysis image is empty")
+        return "Weekly analysis failed. (Image was empty)"
 
 # Multilingual Support
 def translate_message(text, target_lang):
@@ -428,49 +366,19 @@ def process_purchase(product_id, user_id, target_channel):
 def generate_invoice(customer_id=None, product=None, target_channel=None, user_id=None):
     class InvoicePDF(FPDF):
         def header(self):
-            try:
-                self.image(LOGO_PATH, 140, 8, 33)
-            except:
-                self.cell(0, 10, "Logo not found", align="R", ln=True)
             self.set_font("Arial", "B", 16)
             self.cell(0, 10, "INVOICE", align="C", ln=True)
             self.ln(10)
 
-        def footer(self):
-            self.set_y(-15)
-            self.set_font("Arial", "I", 8)
-            self.cell(0, 10, "Thank you for your business!", align="C")
-
-        def add_company_and_client_info(self, company, client):
-            self.set_font("Arial", "", 10)
-            self.multi_cell(0, 10, company)
-            self.ln(5)
-            self.set_font("Arial", "B", 8)
-            self.cell(0, 10, "INVOICE TO:", align="L")
-            self.ln(5)
-            self.set_font("Arial", "", 10)
-            self.multi_cell(0, 10, client)
-            self.ln(10)
-
         def add_table(self, header, data):
-            self.set_fill_color(200, 220, 255)
             self.set_font("Arial", "B", 10)
-            col_widths = [60, 30, 40, 40]
-            for i, col in enumerate(header):
-                self.cell(col_widths[i], 10, col, border=1, align="C", fill=True)
+            for col in header:
+                self.cell(40, 10, col, border=1)
             self.ln()
             self.set_font("Arial", "", 10)
             for row in data:
-                for i, col in enumerate(row):
-                    self.cell(col_widths[i], 10, str(col), border=1, align="C")
-                self.ln()
-
-        def add_summary(self, summary):
-            self.set_font("Arial", "B", 10)
-            self.ln(10)
-            for label, value in summary:
-                self.cell(80, 10, label, border=0)
-                self.cell(30, 10, value, border=0, align="R")
+                for col in row:
+                    self.cell(40, 10, str(col), border=1)
                 self.ln()
 
     pdf = InvoicePDF()
@@ -478,73 +386,34 @@ def generate_invoice(customer_id=None, product=None, target_channel=None, user_i
 
     try:
         logging.info(f"Generating invoice for user {user_id}, target_channel {target_channel}")
+        header = ["Product", "Qty", "Price", "Total"]
         if customer_id and product:
-            user = user_states.get(next((uid for uid, data in user_states.items() if data['customer_id'] == customer_id), None), {})
-            company_info = "PSG College of Technology\nCoimbatore, Tamil Nadu\nPhone: 123-456-7890"
-            client_info = f"{user.get('name', 'Unknown')}\n{user.get('address', 'N/A')}\n{user.get('email', 'N/A')}\n{user.get('phone', 'N/A')}"
-            header = ["Product", "Qty", "Unit Price", "Total"]
-            invoice_items = [[product['product_name'], 1, float(product['price']), float(product['price'])]]
-            total_before_gst = float(product['price'])
+            invoice_items = [[product['product_name'], 1, product['price'], product['price']]]
+            total = float(product['price'])
         else:
-            company_info = "PSG College of Technology\nCoimbatore, Tamil Nadu\nPhone: 123-456-7890"
-            client_info = "Akil K\nCSE\nCoimbatore"
-            header = ["Product", "Qty", "Unit Price", "Total"]
-            invoice_items = [
-                ["iPhone", 1, 700.00, 700.00],
-                ["Lightning Charging Cable", 1, 14.95, 14.95],
-                ["Wired Headphones", 2, 11.99, 23.98]
-            ]
-            total_before_gst = sum(item[3] for item in invoice_items)
-        
-        gst_rate = 0.18
-        gst_amount = total_before_gst * gst_rate
-        total_with_gst = total_before_gst + gst_amount
-        
-        pdf.add_company_and_client_info(company_info, client_info)
+            invoice_items = [["Sample Product", 1, 100.00, 100.00]]  # Default data
+            total = 100.00
+
         pdf.add_table(header, invoice_items)
-        pdf.add_summary([
-            ("Subtotal", f"INR {total_before_gst:,.2f}"),
-            ("GST (18%)", f"INR {gst_amount:,.2f}"),
-            ("Total Amount", f"INR {total_with_gst:,.2f}")
-        ])
-        
         pdf_bytes = pdf.output(dest='S').encode('latin-1')
         pdf_byte_arr = BytesIO(pdf_bytes)
         pdf_byte_arr.seek(0)
-        filename = f"invoice_{customer_id or 'dynamic'}_{str(uuid.uuid4())[:8]}.pdf"
+        filename = f"invoice_{customer_id or 'sample'}_{str(uuid.uuid4())[:8]}.pdf"
 
         if pdf_byte_arr.getbuffer().nbytes > 0:
-            try:
-                client.files_upload_v2(
-                    channels=target_channel,
-                    file=pdf_byte_arr,
-                    filename=filename,
-                    title="Invoice"
-                )
-                logging.info(f"Generated invoice, size: {pdf_byte_arr.getbuffer().nbytes} bytes, uploaded to channel {target_channel}")
-                return f"Invoice generated and uploaded to <#{target_channel}>!"
-            except SlackApiError as e:
-                if e.response["error"] == "channel_not_found":
-                    dm_channel = get_dm_channel(user_id)
-                    if dm_channel:
-                        client.files_upload_v2(
-                            channels=dm_channel,
-                            file=pdf_byte_arr,
-                            filename=filename,
-                            title="Invoice"
-                        )
-                        logging.info(f"Generated invoice, size: {pdf_byte_arr.getbuffer().nbytes} bytes, uploaded to DM {dm_channel}")
-                        return "Invoice generated and sent to your DM (specified channel not found)."
-                    else:
-                        return "Failed to upload invoice: DM channel not available."
-                else:
-                    raise
+            client.files_upload_v2(
+                channels=target_channel,
+                file=pdf_byte_arr,
+                filename=filename,
+                title="Invoice"
+            )
+            return f"Invoice uploaded to <#{target_channel}>!"
         else:
-            logging.error("Generated invoice is empty")
-            return FALLBACK_RESPONSES["invoice"] + " (File was empty)"
-    except Exception as e:
-        logging.error(f"Invoice generation error: {e}")
-        return FALLBACK_RESPONSES["invoice"]
+            logging.error("Invoice PDF is empty")
+            return "Sorry, invoice generation failed. (File was empty)"
+    except SlackApiError as e:
+        logging.error(f"Invoice upload error: {e}")
+        return "Sorry, invoice generation failed."
 
 # Sales Insights
 def generate_sales_insights():
