@@ -1,7 +1,5 @@
 # image_gen.py
 import google.generativeai as genai
-from PIL import Image
-from io import BytesIO
 import os
 
 # Configure Google Generative AI with environment variable
@@ -16,12 +14,7 @@ def generate_promotion_image(prompt):
             if hasattr(candidate.content, 'parts'):
                 for part in candidate.content.parts:
                     if hasattr(part, 'inline_data') and part.inline_data:
-                        image_data = part.inline_data.data
-                        image = Image.open(BytesIO(image_data))
-                        img_byte_arr = BytesIO()
-                        image.save(img_byte_arr, format='PNG')
-                        img_byte_arr.seek(0)
-                        return img_byte_arr
+                        return BytesIO(part.inline_data.data)
         return None
     except Exception as e:
         print(f"Error generating promotion image: {e}")
