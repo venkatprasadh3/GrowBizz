@@ -25,7 +25,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 import plotly.express as px
-import base64
 import datetime
 
 # Configuration and Constants
@@ -34,7 +33,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # Environment Variables for Render
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
-GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
+GENAI_API_KEY = os.environ.get("GENAI_API_KEY", "your-default-api-key")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")
@@ -49,6 +48,7 @@ SALES_DATA_PATH = os.path.join(BASE_DIR, "sales_data.csv")
 INVENTORY_PATH = os.path.join(BASE_DIR, "inventory.csv")
 USERS_PATH = os.path.join(BASE_DIR, "users.csv")
 CUSTOMER_SHOPPING_DATA_PATH = os.path.join(BASE_DIR, "customer_shopping_data.csv")
+LOGO_PATH = os.path.join(BASE_DIR, "psg_logo_blue.png")
 
 # Global Variables
 user_states = {}
@@ -161,7 +161,7 @@ def load_users():
 def load_sales_data():
     if os.path.exists(SALES_DATA_PATH):
         df = pd.read_csv(SALES_DATA_PATH)
-        df['Order Date'] = pd.to_datetime(df['Order Date'], errors='coerce')
+        df['Order Date'] = pd.to_datetime(df['Order Date'], format='%m/%d/%Y', errors='coerce')  # Fixed format
         return df
     else:
         df = pd.DataFrame(columns=["Order Date", "Product", "Quantity Ordered", "Price Each"])
@@ -242,42 +242,123 @@ def process_purchase(user_id, text):
         logging.error(f"Purchase error: {e}")
         return FALLBACK_RESPONSES["purchase"]
 
-# Invoice Generation
-def generate_invoice(customer_id, product, user_id):
+# Invoice Generation (Integrated)
+def generate_invoice(customer_id=None, product=None, user_id=None):
     class InvoicePDF(FPDF):
         def header(self):
+            try:
+                self.image(LOGO_PATH, 140, 8, 33)
+            except:
+                self.cell(0, 10, "Logo not found", align="R", ln=True)
             self.set_font("Arial", "B", 16)
-            self.cell(0, 10, "INVOICE - GrowBizz", align="C", ln=True)
+            self.cell(0, 10, "INVOICE", align="C", ln=True)
             self.ln(10)
+
+        def footer(self):
+            self.set_y(-15)
+            self.set_font("Arial", "I", 8)
+            self.cell(0, 10, "Thank you for your business!", align="C")
+
+        def add_company_and_client_info(self, company, client):
+            self.set_font("Arial", "", 10)
+            self.multi_cell(0, 10, company)
+            self.ln(5)
+            self.set_font("Arial", "B", 8)
+            self.cell(0, 10, "INVOICE TO:", align="L")
+            self.ln(5)
+            self.set_font("Arial", "", 10)
+            self.multi_cell(0, 10, client)
+            self.ln(10)
+
         def add_table(self, header, data):
+            self.set_fill_color(200, 220, 255)
             self.set_font("Arial", "B", 10)
-            for col in header:
-                self.cell(40, 10, col, border=1)
+            col_widths = [60, 30, 40, 40]
+            for i, col in enumerate(header):
+                self.cell(col_widths[i], 10, col, border=1, align="C", fill=True)
             self.ln()
             self.set_font("Arial", "", 10)
             for row in data:
-                for col in row:
-                    self.cell(40, 10, str(col), border=1)
+                for i, col in enumerate(row):
+                    self.cell(col_widths[i], 10, str(col), border=1, align="C")
                 self.ln()
+
+        def add_summary(self, summary):
+            self.set_font("Arial", "B", 10)
+            self.ln(10)
+            for label, value in summary:
+                self.cell(80, 10, label, border=0)
+                self.cell(30, 10, value, border=0, align="R")
+                self.ln()
+
     pdf = InvoicePDF()
     pdf.add_page()
+
     try:
-        header = ["Product", "Qty", "Price", "Total"]
-        invoice_items = [[product['product_name'], 1, product['price'], product['price']]]
-        pdf.add_table(header, invoice_items)
-        pdf_file = os.path.join(BASE_DIR, f"invoice_{customer_id}_{uuid.uuid4().hex[:8]}.pdf")
-        pdf.output(pdf_file)
-        dm_channel = get_dm_channel(user_id)
+        if customer_id and product and user_id:
+            users_df = load_users()
+            customer = users_df[users_df['customer_id'] == customer_id].iloc[0] if customer_id in users_df['customer_id'].values else None
+            if not customer:
+                return "Customer not found in users.csv."
+
+            company_info = "PSG College of Technology\nCoimbatore, Tamil Nadu\nPhone: 123-456-7890"
+            client_info = f"{customer['name']}\n{customer['address']}\n{customer['email']}\n{customer['phone']}"
+            header = ["Product", "Qty", "Unit Price", "Total"]
+            invoice_items = [[product['product_name'], 1, float(product['price']), float(product['price'])]]
+
+            total_before_gst = float(product['price'])
+            gst_rate = 0.18
+            gst_amount = total_before_gst * gst_rate
+            total_with_gst = total_before_gst + gst_amount
+
+            pdf.add_company_and_client_info(company_info, client_info)
+            pdf.add_table(header, invoice_items)
+            pdf.add_summary([
+                ("Subtotal", f"INR {total_before_gst:,.2f}"),
+                ("GST (18%)", f"INR {gst_amount:,.2f}"),
+                ("Total Amount", f"INR {total_with_gst:,.2f}")
+            ])
+
+            invoice_path = os.path.join(BASE_DIR, f"invoice_{customer_id}_{uuid.uuid4().hex[:8]}.pdf")
+        else:
+            company_info = "PSG College of Technology\nCoimbatore, Tamil Nadu\nPhone: 123-456-7890"
+            client_info = "Akil K\nCSE\nCoimbatore"
+            header = ["Product", "Qty", "Unit Price", "Total"]
+            invoice_items = [
+                ["iPhone", 1, 700.00, 700.00],
+                ["Lightning Charging Cable", 1, 14.95, 14.95],
+                ["Wired Headphones", 2, 11.99, 23.98],
+                ["27in FHD Monitor", 1, 149.99, 149.99],
+                ["Wired Headphones", 1, 11.99, 11.99]
+            ]
+
+            total_before_gst = sum(item[3] for item in invoice_items)
+            gst_rate = 0.18
+            gst_amount = total_before_gst * gst_rate
+            total_with_gst = total_before_gst + gst_amount
+
+            pdf.add_company_and_client_info(company_info, client_info)
+            pdf.add_table(header, invoice_items)
+            pdf.add_summary([
+                ("Subtotal", f"INR {total_before_gst:,.2f}"),
+                ("GST (18%)", f"INR {gst_amount:,.2f}"),
+                ("Total Amount", f"INR {total_with_gst:,.2f}")
+            ])
+
+            invoice_path = os.path.join(BASE_DIR, "invoice_dynamic.pdf")
+
+        pdf.output(invoice_path)
+        dm_channel = get_dm_channel(user_id) if user_id else None
         if dm_channel:
-            with open(pdf_file, 'rb') as f:
+            with open(invoice_path, 'rb') as f:
                 client.files_upload_v2(
-                    channels=dm_channel,
+                    channel=dm_channel,
                     file=f,
-                    filename=os.path.basename(pdf_file),
+                    filename=os.path.basename(invoice_path),
                     title="Invoice"
                 )
-            return f"Invoice generated and sent to your DM! Saved as {os.path.basename(pdf_file)}"
-        return "Failed to upload invoice."
+            return f"Invoice generated and sent to your DM! Saved as {os.path.basename(invoice_path)}"
+        return f"Invoice generated at {invoice_path} but not uploaded (no DM channel)."
     except Exception as e:
         logging.error(f"Invoice error: {e}")
         return FALLBACK_RESPONSES["invoice"]
@@ -285,28 +366,23 @@ def generate_invoice(customer_id, product, user_id):
 # Promotion Generation
 def generate_promotion(prompt, user_id):
     try:
-        contents = f"Create a promotion poster: {prompt}"
-        response = genai.generate_content(
-            model="gemini-2.0-flash-exp-image-generation",
-            contents=contents,
-            config={"response_modalities": ['Text', 'Image']}
-        )
-        for part in response.candidates[0].content.parts:
-            if part.inline_data:
-                image = Image.open(BytesIO(part.inline_data.data))
-                promo_file = os.path.join(BASE_DIR, "promotion_image.png")
-                image.save(promo_file)
-                dm_channel = get_dm_channel(user_id)
-                if dm_channel:
-                    with open(promo_file, 'rb') as f:
-                        client.files_upload_v2(
-                            channels=dm_channel,
-                            file=f,
-                            filename="promotion_image.png",
-                            title=f"Promotion: {prompt}"
-                        )
-                    return f"Promotion generated and sent to your DM!\nText: {prompt}"
-        return FALLBACK_RESPONSES["promotion"]
+        img = Image.new('RGB', (400, 200), color='white')
+        d = ImageDraw.Draw(img)
+        font = ImageFont.load_default()
+        d.text((10, 10), f"Promotion: {prompt}", fill='black', font=font)
+        promo_file = os.path.join(BASE_DIR, "promotion_image.png")
+        img.save(promo_file)
+        dm_channel = get_dm_channel(user_id)
+        if dm_channel:
+            with open(promo_file, 'rb') as f:
+                client.files_upload_v2(
+                    channel=dm_channel,
+                    file=f,
+                    filename="promotion_image.png",
+                    title=f"Promotion: {prompt}"
+                )
+            return f"Promotion generated and sent to your DM!\nText: {prompt}"
+        return "Failed to upload promotion image."
     except Exception as e:
         logging.error(f"Promotion error: {e}")
         return FALLBACK_RESPONSES["promotion"]
@@ -323,7 +399,7 @@ def generate_chart(user_id, query):
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
             client.files_upload_v2(
-                channels=dm_channel,
+                channel=dm_channel,
                 file=img_byte_arr,
                 filename=f"chart_{uuid.uuid4().hex[:8]}.png",
                 title="Sales by Product"
@@ -364,7 +440,7 @@ def generate_weekly_sales_analysis(user_id):
     if dm_channel:
         for i, img in enumerate([img_byte_arr1, img_byte_arr2, img_byte_arr3], 1):
             client.files_upload_v2(
-                channels=dm_channel,
+                channel=dm_channel,
                 file=img,
                 filename=f"weekly_analysis_{i}_{uuid.uuid4().hex[:8]}.png",
                 title=f"Weekly Analysis Graph {i}"
@@ -428,8 +504,8 @@ def process_query(text, user_id, event_channel):
         elif "whatsapp" in text:
             message = text.replace("whatsapp", "").strip() or "Hello from GrowBizz!"
             return send_whatsapp_message(user_id, message)
-        elif "invoice" in text:
-            return generate_invoice(None, {'product_name': "Sample", 'price': 100}, user_id)
+        elif "invoice" in text or "generate invoice" in text:
+            return generate_invoice(None, None, user_id)
         elif "chart" in text:
             return generate_chart(user_id, text)
         else:
