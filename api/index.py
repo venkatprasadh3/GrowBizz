@@ -1,4 +1,3 @@
-# api/index.py
 import os
 import re
 import logging
@@ -105,8 +104,10 @@ def update_inventory(product, quantity):
     if product in df['Product'].values:
         df.loc[df['Product'] == product, 'Stock'] -= quantity
         df.to_csv(INVENTORY_PATH, index=False)
+        return True
     else:
         logging.error(f"Product {product} not found in inventory")
+        return False
 
 def load_users():
     if os.path.exists(USERS_PATH):
@@ -119,7 +120,7 @@ def load_users():
 def load_sales_data():
     if os.path.exists(SALES_DATA_PATH):
         df = pd.read_csv(SALES_DATA_PATH, low_memory=False)
-        df['Order Date'] = pd.to_datetime(df['Order Date'], format='%m/%d/%y %H:%M', errors='coerce')
+        df['Order Date'] = pd.to_datetime(df['Order Date'], errors='coerce')
         df.dropna(subset=['Order Date'], inplace=True)
         df['Quantity Ordered'] = pd.to_numeric(df['Quantity Ordered'], errors='coerce').fillna(0).astype('Int64')
         df['Price Each'] = pd.to_numeric(df['Price Each'], errors='coerce').fillna(0.0)
@@ -163,7 +164,7 @@ def handle_customer_registration(user_id, data):
         users_df = pd.concat([users_df, new_user], ignore_index=True)
         users_df.to_csv(USERS_PATH, index=False)
         
-        welcome_msg = f"Welcome {user_states[user_id]['owner_name']} to GrowBizz!"
+        welcome_msg = f"Welcome {user_states[user_id]['owner_name']} to GrowBizz! Your ID: {customer_id}"
         whatsapp_response = send_whatsapp_message(user_id, welcome_msg)
         return f"Registration successful! ID: `{customer_id}`\n{whatsapp_response}"
     except Exception as e:
@@ -188,11 +189,19 @@ def process_purchase(user_id, data):
             return f"Insufficient stock for '{product}'. Available: {stock}"
 
         price = inventory[inventory['Product'] == product]['Price'].iloc[0]
-        update_inventory(product, quantity)
-        update_sales_data(product, quantity, price)
+        total_price = price * quantity
+        
+        # Update inventory and sales
+        if update_inventory(product, quantity):
+            update_sales_data(product, quantity, price)
+        else:
+            return FALLBACK_RESPONSES["purchase"]
 
-        invoice_msg = generate_invoice(user_states[user_id]['customer_id'], {'product_name': product, 'price': price * quantity}, user_id)
-        purchase_msg = f"Purchase confirmed: {quantity} x {product} for INR {price * quantity}"
+        # Generate invoice
+        invoice_msg = generate_invoice(user_states[user_id]['customer_id'], {'product_name': product, 'quantity': quantity, 'price': price, 'total': total_price}, user_id)
+        purchase_msg = f"Purchase confirmed: {quantity} x {product} for INR {total_price}"
+        
+        # Send WhatsApp message
         whatsapp_response = send_whatsapp_message(user_id, purchase_msg)
         return f"{purchase_msg}\n{invoice_msg}\n{whatsapp_response}"
     except Exception as e:
@@ -200,7 +209,7 @@ def process_purchase(user_id, data):
         return FALLBACK_RESPONSES["purchase"]
 
 # Invoice Generation
-def generate_invoice(customer_id, product, user_id):
+def generate_invoice(customer_id, purchase, user_id):
     class InvoicePDF(FPDF):
         def header(self):
             self.set_font("Arial", "B", 16)
@@ -223,7 +232,7 @@ def generate_invoice(customer_id, product, user_id):
 
     try:
         header = ["Product", "Qty", "Price", "Total"]
-        invoice_items = [[product['product_name'], 1, product['price'], product['price']]] if product else [["Sample Product", 1, 100.00, 100.00]]
+        invoice_items = [[purchase['product_name'], purchase['quantity'], purchase['price'], purchase['total']]] if purchase else [["Sample Product", 1, 100.00, 100.00]]
 
         pdf.add_table(header, invoice_items)
         pdf_bytes = pdf.output(dest='S').encode('latin-1')
@@ -322,156 +331,102 @@ def generate_sales_insights():
 
     total_sales = df["Price Each"].sum()
     avg_sale = df["Price Each"].mean()
-    best_selling = df.groupby("Product")["Quantity Ordered"].sum().idxmax()
+    top_product = df.groupby("Product")["Quantity Ordered"].sum().idxmax()
     weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
     trend = "increasing" if weekly_sales.diff().mean() > 0 else "decreasing"
     
-    pytrends.build_payload([best_selling], timeframe='today 3-m')
+    pytrends.build_payload([top_product], timeframe='today 3-m')
     trends = pytrends.interest_over_time()
-    seasonal_factor = trends[best_selling].mean() / 100 if best_selling in trends else 1
+    seasonal_factor = trends[top_product].mean() / 100 if top_product in trends else 1
 
     recommendations = []
     for product in inventory['Product']:
         stock = inventory[inventory['Product'] == product]['Stock'].iloc[0]
         price = inventory[inventory['Product'] == product]['Price'].iloc[0]
         sales = df[df['Product'] == product]['Quantity Ordered'].sum()
-        demand_rate = sales / len(weekly_sales) if sales > 0 else 0.1
-        if stock < demand_rate * seasonal_factor:
-            recommendations.append(f"Stock up {product} (current: {stock}, suggested: {int(demand_rate * seasonal_factor * 2)})")
+        weekly_avg = weekly_sales.mean()
+        demand_rate = (sales / len(weekly_sales)) * seasonal_factor if sales > 0 else 0.1
+        
+        if stock < demand_rate:
+            recommendations.append(f"Stock up {product} (current: {stock}, suggested: {int(demand_rate * 2)})")
         elif stock > demand_rate * 5:
             recommendations.append(f"Decrease price of {product} (current stock: {stock}, low demand)")
-        elif trend == "increasing" and sales > avg_sale:
+        elif trend == "increasing" and sales > weekly_avg:
             recommendations.append(f"Increase price of {product} (high demand)")
 
-    return f"📊 Sales Insights:\nTotal Sales: INR {total_sales:,.2f}\nAverage Sale: INR {avg_sale:,.2f}\nBest Selling: {best_selling}\nTrend: {trend}\nRecommendations:\n" + "\n".join(recommendations)
-
-# Process Query (Helper for Slack Events)
-def process_query(text, user_id):
-    text = text.lower().strip()
-    logging.info(f"Processing query: '{text}' from {user_id}")
-
-    if "register:" in text:
-        try:
-            _, details = text.split("register:", 1)
-            business_name, owner_name, phone, business_type = [x.strip() for x in details.split(',', 3)]
-            return handle_customer_registration(user_id, {
-                'business_name': business_name, 'owner_name': owner_name, 'phone': phone, 'business_type': business_type,
-                'email': '', 'language': DEFAULT_LANGUAGE, 'address': ''
-            })
-        except:
-            return FALLBACK_RESPONSES["register"]
-    elif "purchase:" in text:
-        try:
-            _, details = text.split("purchase:", 1)
-            product, quantity = [x.strip() for x in details.split(',', 1)]
-            return process_purchase(user_id, {'product': product, 'quantity': quantity})
-        except:
-            return FALLBACK_RESPONSES["purchase"]
-    elif "weekly analysis" in text:
-        return generate_weekly_sales_analysis(user_id)
-    elif "insights" in text:
-        return generate_sales_insights()
-    elif "promotion:" in text:
-        prompt = text.replace("promotion:", "").strip()
-        return generate_promotion(prompt, user_id)
-    elif "whatsapp" in text:
-        message = text.replace("whatsapp", "").strip() or "Hello from GrowBizz!"
-        return send_whatsapp_message(user_id, message)
-    elif "invoice" in text:
-        return generate_invoice(None, None, user_id)
-    else:
-        try:
-            response = genai.generate_text(prompt=f"Respond to this: {text}")
-            return response.result.strip()
-        except Exception as e:
-            logging.error(f"GenAI error: {e}")
-            return FALLBACK_RESPONSES["default"]
+    return f"📊 Sales Insights:\nTotal Sales: INR {total_sales:,.2f}\nAverage Sale: INR {avg_sale:,.2f}\nTop Product: {top_product}\nTrend: {trend}\nRecommendations:\n" + "\n".join(recommendations)
 
 # API Endpoints
 @app.route('/slack/events', methods=['POST'])
 def slack_events():
-    """Handle Slack Events API requests, including URL verification."""
     try:
-        data = request.get_json()
+        raw_data = request.data.decode('utf-8')
+        logging.info(f"Raw request data: {raw_data}")
+
+        data = request.get_json(silent=True)
         if not data:
-            logging.error("No JSON data received in Slack event")
-            return Response("No JSON data", status=400)
+            logging.error("Failed to parse JSON from request")
+            return Response("Invalid JSON", status=400)
 
-        logging.info(f"Received Slack event: {data}")
+        logging.info(f"Parsed Slack event: {data}")
 
-        # Handle URL verification challenge
         if data.get('type') == 'url_verification':
             challenge = data.get('challenge')
             if not challenge:
-                logging.error("Challenge parameter missing in URL verification")
+                logging.error("Challenge parameter missing")
                 return Response("Missing challenge", status=400)
-            return jsonify({'challenge': challenge}), 200
+            logging.info(f"Returning challenge: {challenge}")
+            return jsonify({'challenge': challenge}), 200, {'Content-Type': 'application/json'}
 
-        # Handle message events
         if 'event' in data and data['event'].get('type') == 'message' and 'text' in data['event']:
             user_id = data['event']['user']
             text = data['event']['text'].lower().strip()
             logging.info(f"Processing message: '{text}' from {user_id}")
 
-            # Ignore bot messages to prevent loops
             if 'bot_id' in data['event']:
                 logging.info(f"Ignoring bot message from {user_id}")
                 return Response(status=200)
 
-            response = process_query(text, user_id)
-            try:
-                client.chat_postMessage(channel=user_id, text=response)
-                logging.info(f"Sent response to {user_id}: {response}")
-            except SlackApiError as e:
-                logging.error(f"Failed to send message to {user_id}: {e}")
-            return Response(status=200)
+            if "register:" in text:
+                try:
+                    _, details = text.split("register:", 1)
+                    business_name, owner_name, phone, business_type, email, language, address = [x.strip() for x in details.split(',', 6)]
+                    response = handle_customer_registration(user_id, {
+                        'business_name': business_name, 'owner_name': owner_name, 'phone': phone, 'business_type': business_type,
+                        'email': email, 'language': language, 'address': address
+                    })
+                except:
+                    response = FALLBACK_RESPONSES["register"]
+            elif "purchase:" in text:
+                try:
+                    _, details = text.split("purchase:", 1)
+                    product, quantity = [x.strip() for x in details.split(',', 1)]
+                    response = process_purchase(user_id, {'product': product, 'quantity': quantity})
+                except:
+                    response = FALLBACK_RESPONSES["purchase"]
+            elif "weekly analysis" in text:
+                response = generate_weekly_sales_analysis(user_id)
+            elif "insights" in text:
+                response = generate_sales_insights()
+            elif "promotion:" in text:
+                prompt = text.replace("promotion:", "").strip()
+                response = generate_promotion(prompt, user_id)
+            elif "whatsapp" in text:
+                message = text.replace("whatsapp", "").strip() or "Hello from GrowBizz!"
+                response = send_whatsapp_message(user_id, message)
+            elif "invoice" in text:
+                response = generate_invoice(None, None, user_id)
+            else:
+                try:
+                    response = genai.generate_text(prompt=f"Respond to this: {text}").result.strip()
+                except:
+                    response = FALLBACK_RESPONSES["default"]
 
-        logging.info("Event not processed (not a message or verification)")
+            client.chat_postMessage(channel=user_id, text=response)
         return Response(status=200)
     except Exception as e:
         logging.error(f"Slack event processing error: {e}")
         return Response(f"Internal error: {str(e)}", status=500)
-
-@app.route('/register', methods=['POST'])
-def register():
-    data = request.json
-    user_id = data['user_id']
-    return jsonify({'response': handle_customer_registration(user_id, data)})
-
-@app.route('/purchase', methods=['POST'])
-def purchase():
-    data = request.json
-    user_id = data['user_id']
-    return jsonify({'response': process_purchase(user_id, data)})
-
-@app.route('/invoice', methods=['POST'])
-def invoice():
-    data = request.json
-    user_id = data['user_id']
-    return jsonify({'response': generate_invoice(None, None, user_id)})
-
-@app.route('/promotion', methods=['POST'])
-def promotion():
-    data = request.json
-    user_id = data['user_id']
-    prompt = data['prompt']
-    return jsonify({'response': generate_promotion(prompt, user_id)})
-
-@app.route('/weekly-analysis', methods=['GET'])
-def weekly_analysis():
-    user_id = request.args.get('user_id')
-    return jsonify({'response': generate_weekly_sales_analysis(user_id)})
-
-@app.route('/insights', methods=['GET'])
-def insights():
-    return jsonify({'response': generate_sales_insights()})
-
-@app.route('/whatsapp', methods=['POST'])
-def whatsapp():
-    data = request.json
-    user_id = data['user_id']
-    message = data['message']
-    return jsonify({'response': send_whatsapp_message(user_id, message)})
 
 if __name__ == "__main__":
     app.run()
