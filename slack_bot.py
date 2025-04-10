@@ -15,7 +15,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig
 from fpdf import FPDF
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from scipy.stats import norm
 from pytrends.request import TrendReq
@@ -35,7 +35,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
-GENAI_API_KEY = os.environ.get("GENAI_API_KEY", "your-default-api-key")
+GENAI_API_KEY = os.environ.get("GENAI_API_KEY", "your-default-api-key")  # Replace with your actual key
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")
@@ -63,7 +63,7 @@ FALLBACK_RESPONSES = {
     "purchase": "Purchase could not be processed. Please check back later.",
     "weekly analysis": "Weekly analysis unavailable. Data might be missing.",
     "insights": "Insights generation failed. Please try again.",
-    "promotion": "Promotion generation failed. Try again later.",
+    "promotion": "Promotion image generation failed. Try again later.",
     "whatsapp": "Failed to send WhatsApp message. Please try again.",
     "invoice": "Sorry, invoice generation failed. Please try again.",
     "default": "Oops! I didn’t understand that. Try: register, purchase, weekly analysis, insights, promotion, whatsapp, invoice, chart, or ask me anything!",
@@ -168,22 +168,28 @@ def load_users():
         return df
 
 def load_sales_data():
-    if os.path.exists(SALES_DATA_PATH):
-        df = pd.read_csv(SALES_DATA_PATH)
-        df['Order Date'] = pd.to_datetime(df['Order Date'], format='%m/%d/%Y', errors='coerce')
-        return df.dropna(subset=['Order Date'])
-    else:
-        df = pd.DataFrame(columns=["Order Date", "Product", "Quantity Ordered", "Price Each"])
-        df.to_csv(SALES_DATA_PATH, index=False)
-        return df
+    try:
+        if os.path.exists(SALES_DATA_PATH):
+            df = pd.read_csv(SALES_DATA_PATH)
+            df['Order Date'] = pd.to_datetime(df['Order Date'], errors='coerce')  # Handle multiple date formats
+            return df.dropna(subset=['Order Date'])
+        else:
+            df = pd.DataFrame(columns=["Order ID", "Product", "Quantity Ordered", "Price Each", "Order Date", "Purchase Address"])
+            df.to_csv(SALES_DATA_PATH, index=False)
+            return df
+    except Exception as e:
+        logging.error(f"Error loading sales data: {e}")
+        return pd.DataFrame()
 
 def update_sales_data(product, quantity, price):
     df = load_sales_data()
     new_sale = pd.DataFrame({
-        "Order Date": [pd.Timestamp.now()],
+        "Order ID": [int(df['Order ID'].max() + 1) if not df.empty else 141234],
         "Product": [product],
         "Quantity Ordered": [quantity],
-        "Price Each": [price]
+        "Price Each": [price],
+        "Order Date": [pd.Timestamp.now()],
+        "Purchase Address": ["Unknown"]
     })
     df = pd.concat([df, new_sale], ignore_index=True)
     df.to_csv(SALES_DATA_PATH, index=False)
@@ -374,24 +380,72 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
         logging.error(f"Invoice error: {e}")
         return FALLBACK_RESPONSES["invoice"]
 
-# Promotion Generation (Fallback to text due to image generation limitation)
+# Promotion Generation (Updated to generate image with context)
 def generate_promotion(prompt, user_id):
     try:
-        model = genai.GenerativeModel('gemini-2.0-flash-exp-image-generation')  # Attempt experimental model
-        contents = f"Create a promotional poster description for: {prompt}. Include details for an eye-catching design with relevant images and highlight the offer."
-        response = model.generate_content(contents)  # Default to text output
-        promo_text = response.text.strip()
-        logging.warning("Image generation not supported yet; returning text description instead.")
+        model = genai.GenerativeModel('gemini-pro-vision')  # Use a vision-capable model
+        contents = f"Create a promotional poster for: {prompt}. Include relevant images (e.g., product-specific visuals) and highlight the offer with bold text. Ensure the design is vibrant and eye-catching."
+        response = model.generate_content(
+            contents,
+            generation_config=GenerationConfig(response_mime_type="image/png")
+        )
+        promo_file = os.path.join(BASE_DIR, f"promotion_{uuid.uuid4().hex[:8]}.png")
         
+        if hasattr(response, 'parts') and response.parts:
+            for part in response.parts:
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    image_data = part.inline_data.data
+                    image = Image.open(BytesIO(image_data))
+                    image.save(promo_file)
+                    break
+            else:
+                logging.warning("No image data found in response parts.")
+                return "No image generated by the model."
+        else:
+            logging.warning("Response has no parts attribute.")
+            return "Image generation failed due to invalid response."
+
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
-            return f"Promotion generated (text only due to API limitation):\n{promo_text}"
-        return "Failed to send promotion to DM."
+            with open(promo_file, 'rb') as f:
+                client.files_upload_v2(
+                    channel=dm_channel,
+                    file=f,
+                    filename=os.path.basename(promo_file),
+                    title=f"Promotion: {prompt}"
+                )
+            return f"Promotion image generated and sent to your DM!\nText: {prompt}"
+        return "Failed to upload promotion image."
     except Exception as e:
         logging.error(f"Promotion error: {e}")
-        return FALLBACK_RESPONSES["promotion"]
+        # Fallback to basic image generation if API fails
+        try:
+            img = Image.new('RGB', (600, 300), color=(255, 215, 0))  # Gold background
+            d = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("arial.ttf", 40)
+            except:
+                font = ImageFont.load_default()
+            d.rectangle([(10, 10), (590, 290)], outline="black", width=5)
+            d.text((20, 120), f"Promotion: {prompt}", fill='red', font=font)
+            promo_file = os.path.join(BASE_DIR, f"promotion_{uuid.uuid4().hex[:8]}.png")
+            img.save(promo_file)
+            dm_channel = get_dm_channel(user_id)
+            if dm_channel:
+                with open(promo_file, 'rb') as f:
+                    client.files_upload_v2(
+                        channel=dm_channel,
+                        file=f,
+                        filename=os.path.basename(promo_file),
+                        title=f"Promotion: {prompt}"
+                    )
+                return f"Promotion image generated (fallback) and sent to your DM!\nText: {prompt}"
+            return "Failed to upload fallback promotion image."
+        except Exception as e2:
+            logging.error(f"Fallback promotion error: {e2}")
+            return FALLBACK_RESPONSES["promotion"]
 
-# Chart Generation
+# Chart Generation (Updated to use sales_data.csv)
 def generate_chart(user_id, query):
     df = load_sales_data()
     if df.empty:
@@ -434,7 +488,7 @@ def generate_chart(user_id, query):
         logging.error(f"Chart error: {e}")
         return "Chart generation failed."
 
-# Weekly Sales Analysis
+# Weekly Sales Analysis (Updated to use sales_data.csv)
 def generate_weekly_sales_analysis(user_id):
     df = load_sales_data()
     if df.empty:
@@ -482,43 +536,48 @@ def generate_weekly_sales_analysis(user_id):
         logging.error(f"Analysis error: {e}")
         return FALLBACK_RESPONSES["weekly analysis"]
 
-# Sales Insights and Recommendations
+# Sales Insights and Recommendations (Updated to use sales_data.csv)
 def generate_sales_insights():
     df = load_sales_data()
     inventory_df = load_inventory()
-    if df.empty or inventory_df.empty:
-        logging.warning(f"Sales data empty: {df.empty}, Inventory empty: {inventory_df.empty}")
+    if df.empty:
+        logging.warning("Sales data is empty.")
         return FALLBACK_RESPONSES["insights"]
     try:
-        weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
-        total_sales = df['Price Each'].sum()
-        top_product = df.groupby("Product")['Quantity Ordered'].sum().idxmax()
+        total_sales = df["Price Each"].sum()
+        avg_sale = df["Price Each"].mean()
+        best_selling_product = df.groupby("Product")["Quantity Ordered"].sum().idxmax()
         
-        pytrends.build_payload(kw_list=[top_product], timeframe='now 7-d')
+        pytrends.build_payload(kw_list=[best_selling_product], timeframe='now 7-d')
         trends = pytrends.interest_over_time()
-        trend_score = trends[top_product].mean() / 100 if top_product in trends else 0
+        trend_score = trends[best_selling_product].mean() / 100 if best_selling_product in trends else 0
         
         recommendations = []
-        for _, product in inventory_df.iterrows():
-            product_sales = df[df['Product'] == product['Product']]['Price Each'].sum()
-            sales_score = product_sales / total_sales if total_sales > 0 else 0
-            stock_score = 1 - (product['Stock'] / 100)
-            weighted_score = 0.4 * sales_score + 0.3 * stock_score + 0.3 * trend_score
-            
-            if weighted_score < 0.3:
-                recommendations.append(f"Decrease price or promote {product['Product']} (Score: {weighted_score:.2f})")
-            elif weighted_score > 0.7:
-                recommendations.append(f"Increase price for {product['Product']} (Score: {weighted_score:.2f})")
-            if product['Stock'] < 10:
-                recommendations.append(f"Restock {product['Product']} (Current: {product['Stock']})")
+        if not inventory_df.empty:
+            for _, product in inventory_df.iterrows():
+                product_sales = df[df['Product'] == product['Product']]['Price Each'].sum()
+                sales_score = product_sales / total_sales if total_sales > 0 else 0
+                stock_score = 1 - (product['Stock'] / 100)
+                weighted_score = 0.4 * sales_score + 0.3 * stock_score + 0.3 * trend_score
+                
+                if weighted_score < 0.3:
+                    recommendations.append(f"Decrease price or promote {product['Product']} (Score: {weighted_score:.2f})")
+                elif weighted_score > 0.7:
+                    recommendations.append(f"Increase price for {product['Product']} (Score: {weighted_score:.2f})")
+                if product['Stock'] < 10:
+                    recommendations.append(f"Restock {product['Product']} (Current: {product['Stock']})")
         
         insights = (
             f"📊 Sales Insights:\n"
-            f"• Total Sales: INR {total_sales:,.2f}\n"
-            f"• Top Product: {top_product}\n"
-            f"• Trend Score: {trend_score:.2f}\n\n"
-            f"📦 Inventory Recommendations:\n" + "\n".join(recommendations) if recommendations else "No recommendations."
+            f"🔹 Total Sales: INR {total_sales:,.2f}\n"
+            f"🔹 Average Sale: INR {avg_sale:,.2f}\n"
+            f"🔥 Best Selling Product: {best_selling_product}\n"
+            f"📈 Trend Score: {trend_score:.2f}\n\n"
         )
+        if recommendations:
+            insights += f"📦 Inventory Recommendations:\n" + "\n".join(recommendations)
+        else:
+            insights += "📦 No inventory data available for recommendations."
         logging.info(f"Generated insights: {insights}")
         return insights
     except Exception as e:
@@ -590,7 +649,7 @@ class DummyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"GrowBizz Slack bot is running")
 
-    def do_HEAD(self):  # Handle HEAD requests for Render health checks
+    def do_HEAD(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
