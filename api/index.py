@@ -1,3 +1,4 @@
+# api/index.py
 import os
 import re
 import logging
@@ -344,55 +345,92 @@ def generate_sales_insights():
 
     return f"📊 Sales Insights:\nTotal Sales: INR {total_sales:,.2f}\nAverage Sale: INR {avg_sale:,.2f}\nBest Selling: {best_selling}\nTrend: {trend}\nRecommendations:\n" + "\n".join(recommendations)
 
+# Process Query (Helper for Slack Events)
+def process_query(text, user_id):
+    text = text.lower().strip()
+    logging.info(f"Processing query: '{text}' from {user_id}")
+
+    if "register:" in text:
+        try:
+            _, details = text.split("register:", 1)
+            business_name, owner_name, phone, business_type = [x.strip() for x in details.split(',', 3)]
+            return handle_customer_registration(user_id, {
+                'business_name': business_name, 'owner_name': owner_name, 'phone': phone, 'business_type': business_type,
+                'email': '', 'language': DEFAULT_LANGUAGE, 'address': ''
+            })
+        except:
+            return FALLBACK_RESPONSES["register"]
+    elif "purchase:" in text:
+        try:
+            _, details = text.split("purchase:", 1)
+            product, quantity = [x.strip() for x in details.split(',', 1)]
+            return process_purchase(user_id, {'product': product, 'quantity': quantity})
+        except:
+            return FALLBACK_RESPONSES["purchase"]
+    elif "weekly analysis" in text:
+        return generate_weekly_sales_analysis(user_id)
+    elif "insights" in text:
+        return generate_sales_insights()
+    elif "promotion:" in text:
+        prompt = text.replace("promotion:", "").strip()
+        return generate_promotion(prompt, user_id)
+    elif "whatsapp" in text:
+        message = text.replace("whatsapp", "").strip() or "Hello from GrowBizz!"
+        return send_whatsapp_message(user_id, message)
+    elif "invoice" in text:
+        return generate_invoice(None, None, user_id)
+    else:
+        try:
+            response = genai.generate_text(prompt=f"Respond to this: {text}")
+            return response.result.strip()
+        except Exception as e:
+            logging.error(f"GenAI error: {e}")
+            return FALLBACK_RESPONSES["default"]
+
 # API Endpoints
 @app.route('/slack/events', methods=['POST'])
 def slack_events():
-    data = request.json
-    if data.get('type') == 'url_verification':
-        return jsonify({'challenge': data['challenge']})
-    
-    if 'event' in data and data['event']['type'] == 'message':
-        user_id = data['event']['user']
-        text = data['event']['text'].lower().strip()
-        logging.info(f"Received Slack message: '{text}' from {user_id}")
+    """Handle Slack Events API requests, including URL verification."""
+    try:
+        data = request.get_json()
+        if not data:
+            logging.error("No JSON data received in Slack event")
+            return Response("No JSON data", status=400)
 
-        if "register:" in text:
-            try:
-                _, details = text.split("register:", 1)
-                business_name, owner_name, phone, business_type = [x.strip() for x in details.split(',', 3)]
-                email = request.args.get('email', '')
-                language = request.args.get('language', DEFAULT_LANGUAGE)
-                address = request.args.get('address', '')
-                response = handle_customer_registration(user_id, {
-                    'business_name': business_name, 'owner_name': owner_name, 'phone': phone, 'business_type': business_type,
-                    'email': email, 'language': language, 'address': address
-                })
-            except:
-                response = FALLBACK_RESPONSES["register"]
-        elif "purchase:" in text:
-            try:
-                _, details = text.split("purchase:", 1)
-                product, quantity = [x.strip() for x in details.split(',', 1)]
-                response = process_purchase(user_id, {'product': product, 'quantity': quantity})
-            except:
-                response = FALLBACK_RESPONSES["purchase"]
-        elif "weekly analysis" in text:
-            response = generate_weekly_sales_analysis(user_id)
-        elif "insights" in text:
-            response = generate_sales_insights()
-        elif "promotion:" in text:
-            prompt = text.replace("promotion:", "").strip()
-            response = generate_promotion(prompt, user_id)
-        elif "whatsapp" in text:
-            message = text.replace("whatsapp", "").strip() or "Hello from GrowBizz!"
-            response = send_whatsapp_message(user_id, message)
-        elif "invoice" in text:
-            response = generate_invoice(None, None, user_id)
-        else:
-            response = genai.generate_text(prompt=f"Respond to this: {text}").result.strip()
+        logging.info(f"Received Slack event: {data}")
 
-        client.chat_postMessage(channel=user_id, text=response)
-    return Response(status=200)
+        # Handle URL verification challenge
+        if data.get('type') == 'url_verification':
+            challenge = data.get('challenge')
+            if not challenge:
+                logging.error("Challenge parameter missing in URL verification")
+                return Response("Missing challenge", status=400)
+            return jsonify({'challenge': challenge}), 200
+
+        # Handle message events
+        if 'event' in data and data['event'].get('type') == 'message' and 'text' in data['event']:
+            user_id = data['event']['user']
+            text = data['event']['text'].lower().strip()
+            logging.info(f"Processing message: '{text}' from {user_id}")
+
+            # Ignore bot messages to prevent loops
+            if 'bot_id' in data['event']:
+                logging.info(f"Ignoring bot message from {user_id}")
+                return Response(status=200)
+
+            response = process_query(text, user_id)
+            try:
+                client.chat_postMessage(channel=user_id, text=response)
+                logging.info(f"Sent response to {user_id}: {response}")
+            except SlackApiError as e:
+                logging.error(f"Failed to send message to {user_id}: {e}")
+            return Response(status=200)
+
+        logging.info("Event not processed (not a message or verification)")
+        return Response(status=200)
+    except Exception as e:
+        logging.error(f"Slack event processing error: {e}")
+        return Response(f"Internal error: {str(e)}", status=500)
 
 @app.route('/register', methods=['POST'])
 def register():
