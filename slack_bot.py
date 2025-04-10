@@ -13,6 +13,7 @@ from twilio.rest import Client
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
+from google.genai import types
 from fpdf import FPDF
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
@@ -26,6 +27,8 @@ from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 import plotly.express as px
 import datetime
+import seaborn as sns
+from googletrans import Translator
 
 # Configuration and Constants
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -45,15 +48,16 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SALES_DATA_PATH = os.path.join(BASE_DIR, "sales_data.csv")
 INVENTORY_PATH = os.path.join(BASE_DIR, "inventory.csv")
 USERS_PATH = os.path.join(BASE_DIR, "users.csv")
-CUSTOMER_SHOPPING_DATA_PATH = os.path.join(BASE_DIR, "customer_shopping_data.csv")
 LOGO_PATH = os.path.join(BASE_DIR, "psg_logo_blue.png")
 
 user_states = {}
 client = WebClient(token=SLACK_BOT_TOKEN)
 genai.configure(api_key=GENAI_API_KEY)
+genai_client = genai.Client(api_key=GENAI_API_KEY)
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
 pytrends = TrendReq(hl='en-US', tz=360)
 app = FastAPI()
+translator = Translator()
 
 FALLBACK_RESPONSES = {
     "register": "Sorry, registration failed. Please try again later.",
@@ -76,16 +80,20 @@ def get_dm_channel(user_id):
         logging.error(f"Failed to open DM channel for {user_id}: {e}")
         return None
 
+def get_user_language(user_id):
+    users_df = load_users()
+    user = users_df[users_df['slack_id'] == user_id].iloc[0] if user_id in users_df['slack_id'].values else None
+    return user['language'] if user else DEFAULT_LANGUAGE
+
 def translate_message(text, target_lang):
     try:
-        # Fallback translation for testing (replace with actual API call when fixed)
-        if target_lang.lower() == "tamil":
-            translations = {"Hello from GrowBizz!": "க்ரோபிஸ்ஸிலிருந்து வணக்கம்!"}
-            return translations.get(text, text)
-        return text  # Default to English if no translation
+        if target_lang.lower() == "english":
+            return text
+        translated = translator.translate(text, dest=target_lang.lower()).text
+        return translated
     except Exception as e:
         logging.error(f"Translation error: {e}")
-        return text
+        return text  # Fallback to original text
 
 def send_whatsapp_message(user_id, message):
     if not twilio_client:
@@ -151,9 +159,12 @@ def update_inventory(product, quantity):
 
 def load_users():
     if os.path.exists(USERS_PATH):
-        return pd.read_csv(USERS_PATH)
+        df = pd.read_csv(USERS_PATH)
+        if 'slack_id' not in df.columns:
+            df['slack_id'] = ""
+        return df
     else:
-        df = pd.DataFrame(columns=["customer_id", "name", "email", "phone", "language", "address"])
+        df = pd.DataFrame(columns=["customer_id", "name", "email", "phone", "language", "address", "slack_id"])
         df.to_csv(USERS_PATH, index=False)
         return df
 
@@ -161,7 +172,7 @@ def load_sales_data():
     if os.path.exists(SALES_DATA_PATH):
         df = pd.read_csv(SALES_DATA_PATH)
         df['Order Date'] = pd.to_datetime(df['Order Date'], format='%m/%d/%Y', errors='coerce')
-        return df.dropna(subset=['Order Date'])  # Drop rows with invalid dates
+        return df.dropna(subset=['Order Date'])
     else:
         df = pd.DataFrame(columns=["Order Date", "Product", "Quantity Ordered", "Price Each"])
         df.to_csv(SALES_DATA_PATH, index=False)
@@ -189,11 +200,9 @@ def handle_customer_registration(user_id, text):
         try:
             _, details = text.lower().split("register:", 1)
             name, email, phone, language, address = [x.strip() for x in details.split(',', 4)]
-            # Handle Slack's <tel:+number|+number> format
             phone = re.sub(r'<tel:(\+\d+)\|.*>', r'\1', phone)
             phone = re.sub(r'[^0-9+]', '', phone)
             phone = '+' + phone if not phone.startswith('+') else phone
-            # Handle Slack's <mailto:email|email> format
             email = re.sub(r'<mailto:([^|]+)\|.*>', r'\1', email)
             customer_id = str(uuid.uuid4())
             user_states[user_id] = {
@@ -206,7 +215,7 @@ def handle_customer_registration(user_id, text):
                 'context': 'registered'
             }
             users_df = load_users()
-            new_user = pd.DataFrame([user_states[user_id]])
+            new_user = pd.DataFrame([{**user_states[user_id], 'slack_id': user_id}])
             users_df = pd.concat([users_df, new_user], ignore_index=True)
             users_df.to_csv(USERS_PATH, index=False)
             welcome_msg = f"Welcome {name} to GrowBizz!"
@@ -369,16 +378,18 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
 # Promotion Generation
 def generate_promotion(prompt, user_id):
     try:
-        img = Image.new('RGB', (600, 300), color=(255, 215, 0))  # Gold background
-        d = ImageDraw.Draw(img)
-        try:
-            font = ImageFont.truetype("arial.ttf", 40)  # Larger font
-        except:
-            font = ImageFont.load_default()
-        d.rectangle([(10, 10), (590, 290)], outline="black", width=5)  # Border
-        d.text((20, 120), f"Promotion: {prompt}", fill='red', font=font)  # Centered text
+        contents = f"Create a promotional poster for: {prompt}. Include relevant images and highlight the offer."
+        response = genai_client.models.generate_content(
+            model="gemini-2.0-flash-exp-image-generation",
+            contents=contents,
+            config=types.GenerateContentConfig(response_modalities=['Text', 'Image'])
+        )
         promo_file = os.path.join(BASE_DIR, "promotion_image.png")
-        img.save(promo_file)
+        for part in response.candidates[0].content.parts:
+            if part.inline_data is not None:
+                image = Image.open(BytesIO(part.inline_data.data))
+                image.save(promo_file)
+                break
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
             with open(promo_file, 'rb') as f:
@@ -399,95 +410,123 @@ def generate_chart(user_id, query):
     df = load_sales_data()
     if df.empty:
         return "No sales data available for chart."
-    if "bar chart" in query.lower() and "sales by" in query.lower():
-        fig = px.bar(df, x="Product", y="Price Each", title="Sales by Product", color="Product",
-                     labels={"Price Each": "Total Sales ($)"}, height=500)
-        img_byte_arr = BytesIO()
-        fig.write_image(img_byte_arr, format="png")
-        img_byte_arr.seek(0)
-        dm_channel = get_dm_channel(user_id)
-        if dm_channel:
-            client.files_upload_v2(
-                channel=dm_channel,
-                file=img_byte_arr,
-                filename=f"chart_{uuid.uuid4().hex[:8]}.png",
-                title="Sales by Product"
-            )
-            return "Bar chart sent to your DM!"
-        return "Failed to upload chart."
-    return "Please specify a valid chart type, e.g., 'create a bar chart for the sales by shoe brand'."
+    try:
+        prompt = f"""
+        Generate Plotly Express code for: {query}. Use this data:
+        {df.to_string()}
+        Return just the code, make it professional and sleek with proper bar spacing if applicable.
+        """
+        response = genai_client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+        code = response.text.strip()
+        if "px." in code.lower():
+            local_vars = {"df": df, "px": px}
+            exec(code, globals(), local_vars)
+            fig = local_vars.get("fig")
+            if fig:
+                img_byte_arr = BytesIO()
+                fig.write_image(img_byte_arr, format="png")
+                img_byte_arr.seek(0)
+                dm_channel = get_dm_channel(user_id)
+                if dm_channel:
+                    client.files_upload_v2(
+                        channel=dm_channel,
+                        file=img_byte_arr,
+                        filename=f"chart_{uuid.uuid4().hex[:8]}.png",
+                        title="Sales Chart"
+                    )
+                    return "Chart sent to your DM!"
+                return "Failed to upload chart."
+            return "No figure generated."
+        return "Invalid chart request."
+    except Exception as e:
+        logging.error(f"Chart error: {e}")
+        return "Chart generation failed."
 
 # Weekly Sales Analysis
 def generate_weekly_sales_analysis(user_id):
     df = load_sales_data()
     if df.empty:
         return FALLBACK_RESPONSES["weekly analysis"]
-    
-    # Weekly Sales Graph
-    weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
-    if weekly_sales.empty:
-        return "No valid weekly sales data available."
-    fig1 = px.line(x=weekly_sales.index, y=weekly_sales.values, title="Weekly Sales Trend", labels={"y": "Sales ($)", "x": "Week"})
-    img_byte_arr1 = BytesIO()
-    fig1.write_image(img_byte_arr1, format="png")
-    img_byte_arr1.seek(0)
+    try:
+        # Weekly Sales Graph
+        weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
+        if weekly_sales.empty:
+            return "No valid weekly sales data available."
+        fig1 = px.line(x=weekly_sales.index, y=weekly_sales.values, title="Weekly Sales Trend", 
+                       labels={"y": "Sales (INR)", "x": "Week"}, line_shape='spline', color_discrete_sequence=['#4CAF50'])
+        img_byte_arr1 = BytesIO()
+        fig1.write_image(img_byte_arr1, format="png")
+        img_byte_arr1.seek(0)
 
-    # Overall Sales Graph
-    fig2 = px.line(x=df['Order Date'], y=df['Price Each'].cumsum(), title="Overall Sales Trend", labels={"y": "Cumulative Sales ($)", "x": "Date"})
-    img_byte_arr2 = BytesIO()
-    fig2.write_image(img_byte_arr2, format="png")
-    img_byte_arr2.seek(0)
+        # Overall Sales Graph
+        fig2 = px.line(x=df['Order Date'], y=df['Price Each'].cumsum(), title="Overall Sales Trend", 
+                       labels={"y": "Cumulative Sales (INR)", "x": "Date"}, color_discrete_sequence=['#2196F3'])
+        img_byte_arr2 = BytesIO()
+        fig2.write_image(img_byte_arr2, format="png")
+        img_byte_arr2.seek(0)
 
-    # Normal Distribution Graph
-    sales = df['Price Each']
-    mu, sigma = sales.mean(), sales.std()
-    x = np.linspace(mu - 3*sigma, mu + 3*sigma, 100)
-    fig3 = px.line(x=x, y=norm.pdf(x, mu, sigma), title="Sales Distribution", labels={"y": "Density", "x": "Sales ($)"})
-    img_byte_arr3 = BytesIO()
-    fig3.write_image(img_byte_arr3, format="png")
-    img_byte_arr3.seek(0)
+        # Sales Distribution Graph
+        mu, std = norm.fit(df['Price Each'].dropna())
+        fig3 = px.histogram(df, x="Price Each", nbins=20, title="Sales Distribution", 
+                            histnorm='density', color_discrete_sequence=['#2196F3'])
+        x = np.linspace(df['Price Each'].min(), df['Price Each'].max(), 100)
+        fig3.add_scatter(x=x, y=norm.pdf(x, mu, std), mode='lines', name=f'Fit (μ={mu:.2f}, σ={std:.2f})', line=dict(color='red'))
+        img_byte_arr3 = BytesIO()
+        fig3.write_image(img_byte_arr3, format="png")
+        img_byte_arr3.seek(0)
 
-    dm_channel = get_dm_channel(user_id)
-    if dm_channel:
-        for i, img in enumerate([img_byte_arr1, img_byte_arr2, img_byte_arr3], 1):
-            client.files_upload_v2(
-                channel=dm_channel,
-                file=img,
-                filename=f"weekly_analysis_{i}_{uuid.uuid4().hex[:8]}.png",
-                title=f"Weekly Analysis Graph {i}"
-            )
-        return "Weekly sales analysis (3 graphs) sent to your DM!"
-    return "Failed to upload images."
+        dm_channel = get_dm_channel(user_id)
+        if dm_channel:
+            for i, img in enumerate([img_byte_arr1, img_byte_arr2, img_byte_arr3], 1):
+                client.files_upload_v2(
+                    channel=dm_channel,
+                    file=img,
+                    filename=f"weekly_analysis_{i}_{uuid.uuid4().hex[:8]}.png",
+                    title=f"Weekly Analysis Graph {i}"
+                )
+            return "Weekly sales analysis (3 graphs) sent to your DM!"
+        return "Failed to upload images."
+    except Exception as e:
+        logging.error(f"Analysis error: {e}")
+        return FALLBACK_RESPONSES["weekly analysis"]
 
 # Sales Insights and Recommendations
 def generate_sales_insights():
     df = load_sales_data()
-    inventory = load_inventory()
-    if df.empty or inventory.empty:
+    inventory_df = load_inventory()
+    if df.empty or inventory_df.empty:
         return FALLBACK_RESPONSES["insights"]
     try:
-        total_sales = df["Price Each"].sum()
-        avg_sale = df["Price Each"].mean()
-        best_selling = df.groupby("Product")["Quantity Ordered"].sum().idxmax()
         weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
-        trend = "increasing" if weekly_sales.diff().mean() > 0 else "decreasing"
-        pytrends.build_payload([best_selling], timeframe='today 3-m')
+        total_sales = df['Price Each'].sum()
+        top_product = df.groupby("Product")['Quantity Ordered'].sum().idxmax()
+        
+        pytrends.build_payload(kw_list=[top_product], timeframe='now 7-d')
         trends = pytrends.interest_over_time()
-        seasonal_factor = trends[best_selling].mean() / 100 if best_selling in trends else 1
-
+        trend_score = trends[top_product].mean() / 100 if top_product in trends else 0
+        
         recommendations = []
-        for product in inventory['Product']:
-            stock = inventory[inventory['Product'] == product]['Stock'].iloc[0]
-            price = inventory[inventory['Product'] == product]['Price'].iloc[0]
-            sales = df[df['Product'] == product]['Quantity Ordered'].sum()
-            demand_rate = sales / len(weekly_sales) if sales > 0 else 0.1
-            if stock < demand_rate * seasonal_factor:
-                recommendations.append(f"Stock up {product} (current: {str(stock)}, suggested: {str(int(demand_rate * seasonal_factor * 2))})")
-            elif stock > demand_rate * 5:
-                recommendations.append(f"Decrease price of {product} (current stock: {str(stock)}, low demand)")
-            elif trend == "increasing" and sales > avg_sale:
-                recommendations.append(f"Increase price of {product} (high demand)")
-        return f"📊 Sales Insights:\n🔹 Total Sales: ${total_sales:,.2f}\n🔹 Average Sale: ${avg_sale:,.2f}\n🔥 Best Selling: {best_selling}\n📈 Trend: {trend}\nRecommendations:\n" + "\n".join(recommendations)
+        for _, product in inventory_df.iterrows():
+            product_sales = df[df['Product'] == product['Product']]['Price Each'].sum()
+            sales_score = product_sales / total_sales if total_sales > 0 else 0
+            stock_score = 1 - (product['Stock'] / 100)
+            weighted_score = 0.4 * sales_score + 0.3 * stock_score + 0.3 * trend_score
+            
+            if weighted_score < 0.3:
+                recommendations.append(f"Decrease price or promote {product['Product']} (Score: {weighted_score:.2f})")
+            elif weighted_score > 0.7:
+                recommendations.append(f"Increase price for {product['Product']} (Score: {weighted_score:.2f})")
+            if product['Stock'] < 10:
+                recommendations.append(f"Restock {product['Product']} (Current: {product['Stock']})")
+        
+        insights = (
+            f"📊 Sales Insights:\n"
+            f"• Total Sales: INR {total_sales:,.2f}\n"
+            f"• Top Product: {top_product}\n"
+            f"• Trend Score: {trend_score:.2f}\n\n"
+            f"📦 Inventory Recommendations:\n" + "\n".join(recommendations)
+        )
+        return insights
     except Exception as e:
         logging.error(f"Insights error: {e}")
         return FALLBACK_RESPONSES["insights"]
