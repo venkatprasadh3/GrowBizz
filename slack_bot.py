@@ -658,20 +658,10 @@ def run_http_server():
     server = HTTPServer(("", int(os.getenv("PORT", 3000))), DummyHandler)
     server.serve_forever()
 
-# Test GENAI API Key on Startup
-def test_genai_api_key():
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content("Test API key")
-        logging.info(f"GENAI API Key works! Response: {response.text}")
-    except Exception as e:
-        logging.error(f"GENAI API Key failed: {str(e)}")
-
 if __name__ == "__main__":
     from slack_bolt import App as SlackApp
     from slack_bolt.adapter.socket_mode import SocketModeHandler
     slack_app = SlackApp(token=SLACK_BOT_TOKEN)
-    test_genai_api_key()
 
     @slack_app.message(".*")
     def handle_message(event, say):
