@@ -12,4 +12,6 @@ uvicorn==0.23.2
 twilio==8.10.0
 plotly==5.18.0
 kaleido==0.2.1
+seaborn==0.13.0
+googletrans==4.0.0-rc1
 slack-bolt
