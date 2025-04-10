@@ -9,6 +9,7 @@ import uuid
 from io import BytesIO
 from twilio.rest import Client
 import google.generativeai as genai
+from google.generativeai.types import GenerateContentConfig
 from fpdf import FPDF
 from PIL import Image, ImageDraw, ImageFont
 import image_gen
@@ -18,6 +19,8 @@ from pytrends.request import TrendReq
 from flask import Flask, request, jsonify, Response
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
+import plotly.express as px
+import base64
 
 app = Flask(__name__)
 
@@ -51,7 +54,7 @@ FALLBACK_RESPONSES = {
     "promotion": "Promotion image generation failed. Try again later.",
     "whatsapp": "Failed to send WhatsApp message. Please try again.",
     "invoice": "Sorry, invoice generation failed. Please try again.",
-    "default": "Oops! I didn’t understand that. Try: register, purchase, weekly analysis, insights, promotion, whatsapp, invoice, or ask me anything!",
+    "default": "Oops! I didn’t understand that. Try: register, purchase, weekly analysis, insights, promotion, whatsapp, invoice, CHART, or ask me anything!",
 }
 
 # Helper Functions
@@ -141,6 +144,53 @@ def update_sales_data(product, quantity, price):
     df = pd.concat([df, new_sale], ignore_index=True)
     df.to_csv(SALES_DATA_PATH, index=False)
 
+# Chart Generation
+def generate_bar_chart(user_query, user_id):
+    try:
+        df = load_sales_data()
+        if df.empty:
+            return "No sales data available for charting."
+
+        if "shoe brand" in user_query.lower():
+            sales_by_brand = df.groupby('Product')['Price Each'].sum().reset_index()
+            fig = px.bar(
+                sales_by_brand,
+                x='Product',
+                y='Price Each',
+                title="Sales by Shoe Brand",
+                labels={'Price Each': 'Total Sales (INR)', 'Product': 'Shoe Brand'},
+                template='plotly_white',
+                color='Product',
+                bargap=0.2
+            )
+            fig.update_layout(
+                title_font_size=20,
+                xaxis_title_font_size=16,
+                yaxis_title_font_size=16,
+                margin=dict(l=50, r=50, t=50, b=50),
+                showlegend=False
+            )
+
+            img_byte_arr = BytesIO()
+            fig.write_image(img_byte_arr, format='png')
+            img_byte_arr.seek(0)
+
+            dm_channel = get_dm_channel(user_id)
+            if dm_channel:
+                client.files_upload_v2(
+                    channels=dm_channel,
+                    file=img_byte_arr,
+                    filename=f"bar_chart_{uuid.uuid4().hex[:8]}.png",
+                    title="Sales by Shoe Brand"
+                )
+                return "Bar chart for sales by shoe brand sent to your DM!"
+            return "Chart generated but DM failed."
+        else:
+            return "Please specify 'shoe brand' in your chart request (e.g., 'create a bar chart for the sales by shoe brand')."
+    except Exception as e:
+        logging.error(f"Chart generation error: {e}")
+        return "Error generating chart. Please try again."
+
 # User Registration
 def handle_customer_registration(user_id, data):
     if user_id in user_states and 'customer_id' in user_states[user_id]:
@@ -191,17 +241,13 @@ def process_purchase(user_id, data):
         price = inventory[inventory['Product'] == product]['Price'].iloc[0]
         total_price = price * quantity
         
-        # Update inventory and sales
         if update_inventory(product, quantity):
             update_sales_data(product, quantity, price)
         else:
             return FALLBACK_RESPONSES["purchase"]
 
-        # Generate invoice
         invoice_msg = generate_invoice(user_states[user_id]['customer_id'], {'product_name': product, 'quantity': quantity, 'price': price, 'total': total_price}, user_id)
         purchase_msg = f"Purchase confirmed: {quantity} x {product} for INR {total_price}"
-        
-        # Send WhatsApp message
         whatsapp_response = send_whatsapp_message(user_id, purchase_msg)
         return f"{purchase_msg}\n{invoice_msg}\n{whatsapp_response}"
     except Exception as e:
@@ -238,7 +284,7 @@ def generate_invoice(customer_id, purchase, user_id):
         pdf_bytes = pdf.output(dest='S').encode('latin-1')
         pdf_byte_arr = BytesIO(pdf_bytes)
         pdf_byte_arr.seek(0)
-        filename = f"invoice_{customer_id or 'sample'}_{str(uuid.uuid4())[:8]}.pdf"
+        filename = f"invoice_{customer_id or 'sample'}_{uuid.uuid4().hex[:8]}.pdf"
 
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
@@ -254,73 +300,124 @@ def generate_invoice(customer_id, purchase, user_id):
         logging.error(f"Invoice error: {e}")
         return FALLBACK_RESPONSES["invoice"]
 
-# Promotion Generation
+# Promotion Generation with Gemini 2.0
 def generate_promotion(prompt, user_id):
     try:
-        img_byte_arr = image_gen.generate_promotion_image(prompt)
-        if img_byte_arr:
-            dm_channel = get_dm_channel(user_id)
-            if dm_channel:
-                client.files_upload_v2(
-                    channels=dm_channel,
-                    file=img_byte_arr,
-                    filename=f"promotion_{str(uuid.uuid4())[:8]}.png",
-                    title=f"Promotion: {prompt}"
-                )
-                return f"Promotion sent to your DM!\nText: {prompt}"
+        response = genai.generate_content(
+            model="gemini-2.0-flash-exp-image-generation",
+            prompt=prompt,
+            generation_config=GenerateContentConfig(
+                response_mime_type="image/png"  # Request image output
+            )
+        )
+        
+        # Extract image from response
+        for candidate in response.candidates:
+            for part in candidate.content.parts:
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    img_data = part.inline_data.data
+                    img = Image.open(BytesIO(img_data))
+                    
+                    # Save locally
+                    img.save('promotion_image.png')
+                    
+                    # Prepare for Slack upload
+                    img_byte_arr = BytesIO()
+                    img.save(img_byte_arr, format='PNG')
+                    img_byte_arr.seek(0)
+                    
+                    dm_channel = get_dm_channel(user_id)
+                    if dm_channel:
+                        client.files_upload_v2(
+                            channels=dm_channel,
+                            file=img_byte_arr,
+                            filename="promotion_image.png",
+                            title=f"Promotion: {prompt}"
+                        )
+                        return f"Promotion image sent to your DM!\nText: {prompt}"
+                    return "Promotion generated but DM failed."
         return FALLBACK_RESPONSES["promotion"]
     except Exception as e:
-        logging.error(f"Promotion error: {e}")
+        logging.error(f"Promotion generation error: {e}")
         return FALLBACK_RESPONSES["promotion"]
 
-# Weekly Sales Analysis
+# Weekly Sales Analysis with Plotly
 def generate_weekly_sales_analysis(user_id):
     df = load_sales_data()
     if df.empty:
         return FALLBACK_RESPONSES["weekly analysis"]
 
-    # Weekly Sales Graph
-    plt.figure(figsize=(10, 5))
-    weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
-    plt.plot(weekly_sales.index, weekly_sales.values, marker='o')
-    plt.title("Weekly Sales Trend")
-    img_byte_arr1 = BytesIO()
-    plt.savefig(img_byte_arr1, format='PNG')
-    img_byte_arr1.seek(0)
-    plt.close()
+    try:
+        # Weekly Sales Trend
+        weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum().reset_index()
+        fig1 = px.line(
+            weekly_sales,
+            x='Order Date',
+            y='Price Each',
+            title="Weekly Sales Trend",
+            labels={'Price Each': 'Sales (INR)', 'Order Date': 'Week'},
+            template='plotly_white',
+            line_shape='spline',
+            color_discrete_sequence=['#4CAF50']
+        )
+        fig1.update_layout(title_font_size=20, xaxis_title_font_size=16, yaxis_title_font_size=16)
+        img_byte_arr1 = BytesIO()
+        fig1.write_image(img_byte_arr1, format='png')
+        img_byte_arr1.seek(0)
 
-    # Overall Sales Graph
-    plt.figure(figsize=(10, 5))
-    plt.plot(df['Order Date'], df['Price Each'].cumsum(), marker='o')
-    plt.title("Overall Sales Trend")
-    img_byte_arr2 = BytesIO()
-    plt.savefig(img_byte_arr2, format='PNG')
-    img_byte_arr2.seek(0)
-    plt.close()
+        # Overall Sales Trend
+        overall_sales = df.copy()
+        overall_sales['Cumulative Sales'] = overall_sales['Price Each'].cumsum()
+        fig2 = px.line(
+            overall_sales,
+            x='Order Date',
+            y='Cumulative Sales',
+            title="Overall Sales Trend",
+            labels={'Cumulative Sales': 'Cumulative Sales (INR)', 'Order Date': 'Date'},
+            template='plotly_white',
+            color_discrete_sequence=['#2196F3']
+        )
+        fig2.update_layout(title_font_size=20, xaxis_title_font_size=16, yaxis_title_font_size=16)
+        img_byte_arr2 = BytesIO()
+        fig2.write_image(img_byte_arr2, format='png')
+        img_byte_arr2.seek(0)
 
-    # Normal Distribution Graph
-    plt.figure(figsize=(10, 5))
-    sales = df['Price Each']
-    mu, sigma = sales.mean(), sales.std()
-    x = np.linspace(mu - 3*sigma, mu + 3*sigma, 100)
-    plt.plot(x, norm.pdf(x, mu, sigma))
-    plt.title("Sales Distribution")
-    img_byte_arr3 = BytesIO()
-    plt.savefig(img_byte_arr3, format='PNG')
-    img_byte_arr3.seek(0)
-    plt.close()
+        # Sales Distribution
+        fig3 = px.histogram(
+            df,
+            x='Price Each',
+            nbins=30,
+            title="Sales Distribution",
+            labels={'Price Each': 'Sales Amount (INR)'},
+            template='plotly_white',
+            color_discrete_sequence=['#2196F3']
+        )
+        fig3.update_traces(opacity=0.75)
+        fig3.update_layout(
+            title_font_size=20,
+            xaxis_title_font_size=16,
+            yaxis_title_font_size=16,
+            bargap=0.2,
+            showlegend=False
+        )
+        img_byte_arr3 = BytesIO()
+        fig3.write_image(img_byte_arr3, format='png')
+        img_byte_arr3.seek(0)
 
-    dm_channel = get_dm_channel(user_id)
-    if dm_channel:
-        for i, img in enumerate([img_byte_arr1, img_byte_arr2, img_byte_arr3], 1):
-            client.files_upload_v2(
-                channels=dm_channel,
-                file=img,
-                filename=f"weekly_analysis_{i}_{str(uuid.uuid4())[:8]}.png",
-                title=f"Weekly Analysis Graph {i}"
-            )
-        return "Weekly sales analysis (3 graphs) sent to your DM!"
-    return FALLBACK_RESPONSES["weekly analysis"]
+        dm_channel = get_dm_channel(user_id)
+        if dm_channel:
+            for i, img in enumerate([img_byte_arr1, img_byte_arr2, img_byte_arr3], 1):
+                client.files_upload_v2(
+                    channels=dm_channel,
+                    file=img,
+                    filename=f"weekly_analysis_{i}_{uuid.uuid4().hex[:8]}.png",
+                    title=f"Weekly Analysis Graph {i}"
+                )
+            return "Weekly sales analysis (3 graphs) sent to your DM!"
+        return FALLBACK_RESPONSES["weekly analysis"]
+    except Exception as e:
+        logging.error(f"Weekly analysis error: {e}")
+        return FALLBACK_RESPONSES["weekly analysis"]
 
 # Sales Insights and Recommendations
 def generate_sales_insights():
@@ -416,6 +513,8 @@ def slack_events():
                 response = send_whatsapp_message(user_id, message)
             elif "invoice" in text:
                 response = generate_invoice(None, None, user_id)
+            elif "chart" in text:
+                response = generate_bar_chart(text, user_id)
             else:
                 try:
                     response = genai.generate_text(prompt=f"Respond to this: {text}").result.strip()
