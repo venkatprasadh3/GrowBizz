@@ -1,72 +1,72 @@
 import os
-import re
 import logging
 import pandas as pd
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import uuid
 from io import BytesIO
 from twilio.rest import Client
 import google.generativeai as genai
 from google.generativeai.types import GenerateContentConfig
 from fpdf import FPDF
-from PIL import Image, ImageDraw, ImageFont
-import image_gen
+from PIL import Image
 import numpy as np
-from scipy.stats import norm
 from pytrends.request import TrendReq
 from flask import Flask, request, jsonify, Response
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import plotly.express as px
-import base64
 
+# Set up Flask app
 app = Flask(__name__)
 
-# Configuration and Constants
+# Configure logging for debugging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Environment Variables (Set in Vercel Dashboard)
+# Load environment variables (set these in Vercel dashboard)
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
+
+# File paths for CSV data
 SALES_DATA_PATH = "sales_data.csv"
 INVENTORY_PATH = "inventory.csv"
 USERS_PATH = "users.csv"
 DEFAULT_LANGUAGE = "English"
 
-# Global Variables
-user_states = {}
-client = WebClient(token=SLACK_BOT_TOKEN)
+# Initialize global clients and states
+user_states = {}  # Store user data in memory
+slack_client = WebClient(token=SLACK_BOT_TOKEN)
 genai.configure(api_key=GENAI_API_KEY)
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
 pytrends = TrendReq(hl='en-IN', tz=330)
 
-# Static Fallback Responses
+# Fallback responses for error handling
 FALLBACK_RESPONSES = {
-    "register": "Sorry, registration failed. Please try again later.",
-    "purchase": "Purchase could not be processed. Please check back later.",
-    "weekly analysis": "Weekly analysis unavailable. Data might be missing.",
-    "insights": "Insights generation failed. Please try again.",
-    "promotion": "Promotion image generation failed. Try again later.",
-    "whatsapp": "Failed to send WhatsApp message. Please try again.",
-    "invoice": "Sorry, invoice generation failed. Please try again.",
-    "default": "Oops! I didn’t understand that. Try: register, purchase, weekly analysis, insights, promotion, whatsapp, invoice, CHART, or ask me anything!",
+    "register": "Registration failed. Try again later!",
+    "purchase": "Purchase failed. Please check back later.",
+    "weekly": "Weekly analysis unavailable. No data found.",
+    "insights": "Insights generation failed. Try again!",
+    "promotion": "Promotion image generation failed. Try again!",
+    "whatsapp": "WhatsApp message failed. Try again!",
+    "invoice": "Invoice generation failed. Try again!",
+    "chart": "Chart generation failed. Try again!",
+    "default": "Oops! I didn’t get that. Try: register, purchase, weekly, insights, promotion, whatsapp, invoice, chart"
 }
 
-# Helper Functions
+# --- Helper Functions ---
+
 def get_dm_channel(user_id):
+    """Open a direct message channel with the user."""
     try:
-        response = client.conversations_open(users=user_id)
+        response = slack_client.conversations_open(users=user_id)
         return response['channel']['id']
     except SlackApiError as e:
-        logging.error(f"Failed to open DM channel for {user_id}: {e}")
+        logging.error(f"Failed to open DM for {user_id}: {e}")
         return None
 
 def translate_message(text, target_lang):
+    """Translate text to the target language using Gemini."""
     try:
         response = genai.generate_text(prompt=f"Translate this to {target_lang}: {text}")
         return response.result.strip()
@@ -75,6 +75,7 @@ def translate_message(text, target_lang):
         return text
 
 def send_whatsapp_message(user_id, message):
+    """Send a WhatsApp message to the user's registered phone."""
     if not twilio_client:
         return "WhatsApp not configured."
     if user_id not in user_states or 'phone' not in user_states[user_id]:
@@ -88,52 +89,53 @@ def send_whatsapp_message(user_id, message):
             from_=f"whatsapp:{TWILIO_PHONE_NUMBER}",
             to=f"whatsapp:{phone}"
         )
-        return f"WhatsApp message sent to {phone}!"
+        return f"WhatsApp sent to {phone}!"
     except Exception as e:
         logging.error(f"WhatsApp error: {e}")
         return FALLBACK_RESPONSES["whatsapp"]
 
-# Data Management
+# --- Data Management ---
+
+def load_csv(file_path, columns):
+    """Load or initialize a CSV file with given columns."""
+    if os.path.exists(file_path):
+        return pd.read_csv(file_path, low_memory=False)
+    df = pd.DataFrame(columns=columns)
+    df.to_csv(file_path, index=False)
+    return df
+
 def load_inventory():
-    if os.path.exists(INVENTORY_PATH):
-        return pd.read_csv(INVENTORY_PATH)
-    else:
-        df = pd.DataFrame(columns=["Product", "Stock", "Price"])
-        df.to_csv(INVENTORY_PATH, index=False)
-        return df
+    """Load inventory data."""
+    df = load_csv(INVENTORY_PATH, ["Product", "Stock", "Price"])
+    df['Stock'] = pd.to_numeric(df['Stock'], errors='coerce').fillna(0).astype(int)
+    df['Price'] = pd.to_numeric(df['Price'], errors='coerce').fillna(0.0)
+    return df
+
+def load_users():
+    """Load user data."""
+    return load_csv(USERS_PATH, ["customer_id", "business_name", "owner_name", "phone", "business_type", "email", "language", "address"])
+
+def load_sales_data():
+    """Load sales data and ensure proper data types."""
+    df = load_csv(SALES_DATA_PATH, ["Order Date", "Product", "Quantity Ordered", "Price Each"])
+    df['Order Date'] = pd.to_datetime(df['Order Date'], errors='coerce')
+    df.dropna(subset=['Order Date'], inplace=True)
+    df['Quantity Ordered'] = pd.to_numeric(df['Quantity Ordered'], errors='coerce').fillna(0).astype(int)
+    df['Price Each'] = pd.to_numeric(df['Price Each'], errors='coerce').fillna(0.0)
+    return df
 
 def update_inventory(product, quantity):
+    """Reduce stock for a product in inventory."""
     df = load_inventory()
     if product in df['Product'].values:
         df.loc[df['Product'] == product, 'Stock'] -= quantity
         df.to_csv(INVENTORY_PATH, index=False)
         return True
-    else:
-        logging.error(f"Product {product} not found in inventory")
-        return False
-
-def load_users():
-    if os.path.exists(USERS_PATH):
-        return pd.read_csv(USERS_PATH)
-    else:
-        df = pd.DataFrame(columns=["customer_id", "business_name", "owner_name", "phone", "business_type", "email", "language", "address"])
-        df.to_csv(USERS_PATH, index=False)
-        return df
-
-def load_sales_data():
-    if os.path.exists(SALES_DATA_PATH):
-        df = pd.read_csv(SALES_DATA_PATH, low_memory=False)
-        df['Order Date'] = pd.to_datetime(df['Order Date'], errors='coerce')
-        df.dropna(subset=['Order Date'], inplace=True)
-        df['Quantity Ordered'] = pd.to_numeric(df['Quantity Ordered'], errors='coerce').fillna(0).astype('Int64')
-        df['Price Each'] = pd.to_numeric(df['Price Each'], errors='coerce').fillna(0.0)
-        return df
-    else:
-        df = pd.DataFrame(columns=["Order Date", "Product", "Quantity Ordered", "Price Each"])
-        df.to_csv(SALES_DATA_PATH, index=False)
-        return df
+    logging.error(f"Product {product} not in inventory")
+    return False
 
 def update_sales_data(product, quantity, price):
+    """Add a new sale to sales data."""
     df = load_sales_data()
     new_sale = pd.DataFrame({
         "Order Date": [pd.Timestamp.now()],
@@ -144,57 +146,12 @@ def update_sales_data(product, quantity, price):
     df = pd.concat([df, new_sale], ignore_index=True)
     df.to_csv(SALES_DATA_PATH, index=False)
 
-# Chart Generation
-def generate_bar_chart(user_query, user_id):
-    try:
-        df = load_sales_data()
-        if df.empty:
-            return "No sales data available for charting."
+# --- Feature Functions ---
 
-        if "shoe brand" in user_query.lower():
-            sales_by_brand = df.groupby('Product')['Price Each'].sum().reset_index()
-            fig = px.bar(
-                sales_by_brand,
-                x='Product',
-                y='Price Each',
-                title="Sales by Shoe Brand",
-                labels={'Price Each': 'Total Sales (INR)', 'Product': 'Shoe Brand'},
-                template='plotly_white',
-                color='Product',
-                bargap=0.2
-            )
-            fig.update_layout(
-                title_font_size=20,
-                xaxis_title_font_size=16,
-                yaxis_title_font_size=16,
-                margin=dict(l=50, r=50, t=50, b=50),
-                showlegend=False
-            )
-
-            img_byte_arr = BytesIO()
-            fig.write_image(img_byte_arr, format='png')
-            img_byte_arr.seek(0)
-
-            dm_channel = get_dm_channel(user_id)
-            if dm_channel:
-                client.files_upload_v2(
-                    channels=dm_channel,
-                    file=img_byte_arr,
-                    filename=f"bar_chart_{uuid.uuid4().hex[:8]}.png",
-                    title="Sales by Shoe Brand"
-                )
-                return "Bar chart for sales by shoe brand sent to your DM!"
-            return "Chart generated but DM failed."
-        else:
-            return "Please specify 'shoe brand' in your chart request (e.g., 'create a bar chart for the sales by shoe brand')."
-    except Exception as e:
-        logging.error(f"Chart generation error: {e}")
-        return "Error generating chart. Please try again."
-
-# User Registration
-def handle_customer_registration(user_id, data):
+def handle_registration(user_id, data):
+    """Register a new user and store their details."""
     if user_id in user_states and 'customer_id' in user_states[user_id]:
-        return f"You are already registered with ID: `{user_states[user_id]['customer_id']}`."
+        return f"Already registered with ID: `{user_states[user_id]['customer_id']}`."
 
     try:
         customer_id = str(uuid.uuid4())
@@ -208,60 +165,56 @@ def handle_customer_registration(user_id, data):
             'language': data.get('language', DEFAULT_LANGUAGE),
             'address': data.get('address', '')
         }
-        
         users_df = load_users()
         new_user = pd.DataFrame([user_states[user_id]])
         users_df = pd.concat([users_df, new_user], ignore_index=True)
         users_df.to_csv(USERS_PATH, index=False)
         
-        welcome_msg = f"Welcome {user_states[user_id]['owner_name']} to GrowBizz! Your ID: {customer_id}"
+        welcome_msg = f"Welcome {user_states[user_id]['owner_name']} to GrowBizz! ID: {customer_id}"
         whatsapp_response = send_whatsapp_message(user_id, welcome_msg)
         return f"Registration successful! ID: `{customer_id}`\n{whatsapp_response}"
     except Exception as e:
         logging.error(f"Registration error: {e}")
         return FALLBACK_RESPONSES["register"]
 
-# Purchase Processing
 def process_purchase(user_id, data):
+    """Handle a product purchase, update inventory and sales."""
     if user_id not in user_states or 'customer_id' not in user_states[user_id]:
         return "Please register first."
 
     try:
-        product = data['product']
-        quantity = int(data['quantity'])
-
+        product, quantity = data['product'], int(data['quantity'])
         inventory = load_inventory()
-        if product not in inventory['Product'].values:
-            return f"Product '{product}' not found in inventory."
         
+        if product not in inventory['Product'].values:
+            return f"Product '{product}' not found."
         stock = inventory[inventory['Product'] == product]['Stock'].iloc[0]
         if stock < quantity:
-            return f"Insufficient stock for '{product}'. Available: {stock}"
-
+            return f"Only {stock} of '{product}' available."
+        
         price = inventory[inventory['Product'] == product]['Price'].iloc[0]
         total_price = price * quantity
         
         if update_inventory(product, quantity):
             update_sales_data(product, quantity, price)
-        else:
-            return FALLBACK_RESPONSES["purchase"]
-
-        invoice_msg = generate_invoice(user_states[user_id]['customer_id'], {'product_name': product, 'quantity': quantity, 'price': price, 'total': total_price}, user_id)
-        purchase_msg = f"Purchase confirmed: {quantity} x {product} for INR {total_price}"
-        whatsapp_response = send_whatsapp_message(user_id, purchase_msg)
-        return f"{purchase_msg}\n{invoice_msg}\n{whatsapp_response}"
+            invoice_msg = generate_invoice(user_states[user_id]['customer_id'], 
+                                         {'product_name': product, 'quantity': quantity, 'price': price, 'total': total_price}, 
+                                         user_id)
+            purchase_msg = f"Purchase confirmed: {quantity} x {product} for INR {total_price}"
+            whatsapp_response = send_whatsapp_message(user_id, purchase_msg)
+            return f"{purchase_msg}\n{invoice_msg}\n{whatsapp_response}"
+        return FALLBACK_RESPONSES["purchase"]
     except Exception as e:
         logging.error(f"Purchase error: {e}")
         return FALLBACK_RESPONSES["purchase"]
 
-# Invoice Generation
 def generate_invoice(customer_id, purchase, user_id):
+    """Generate and upload an invoice PDF to Slack."""
     class InvoicePDF(FPDF):
         def header(self):
             self.set_font("Arial", "B", 16)
             self.cell(0, 10, "INVOICE", align="C", ln=True)
             self.ln(10)
-
         def add_table(self, header, data):
             self.set_font("Arial", "B", 10)
             for col in header:
@@ -275,23 +228,20 @@ def generate_invoice(customer_id, purchase, user_id):
 
     pdf = InvoicePDF()
     pdf.add_page()
-
     try:
         header = ["Product", "Qty", "Price", "Total"]
-        invoice_items = [[purchase['product_name'], purchase['quantity'], purchase['price'], purchase['total']]] if purchase else [["Sample Product", 1, 100.00, 100.00]]
-
-        pdf.add_table(header, invoice_items)
+        items = [[purchase['product_name'], purchase['quantity'], purchase['price'], purchase['total']]] if purchase else [["Sample", 1, 100.0, 100.0]]
+        pdf.add_table(header, items)
         pdf_bytes = pdf.output(dest='S').encode('latin-1')
         pdf_byte_arr = BytesIO(pdf_bytes)
         pdf_byte_arr.seek(0)
-        filename = f"invoice_{customer_id or 'sample'}_{uuid.uuid4().hex[:8]}.pdf"
-
+        
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
-            client.files_upload_v2(
+            slack_client.files_upload_v2(
                 channels=dm_channel,
                 file=pdf_byte_arr,
-                filename=filename,
+                filename=f"invoice_{customer_id or 'sample'}_{uuid.uuid4().hex[:8]}.pdf",
                 title="Invoice"
             )
             return "Invoice sent to your DM!"
@@ -300,35 +250,28 @@ def generate_invoice(customer_id, purchase, user_id):
         logging.error(f"Invoice error: {e}")
         return FALLBACK_RESPONSES["invoice"]
 
-# Promotion Generation with Gemini 2.0
 def generate_promotion(prompt, user_id):
+    """Generate a promotion image with Gemini 2.0 and upload to Slack."""
     try:
         response = genai.generate_content(
             model="gemini-2.0-flash-exp-image-generation",
             prompt=prompt,
-            generation_config=GenerateContentConfig(
-                response_mime_type="image/png"  # Request image output
-            )
+            generation_config=GenerateContentConfig(response_mime_type="image/png")
         )
-        
-        # Extract image from response
         for candidate in response.candidates:
             for part in candidate.content.parts:
                 if hasattr(part, 'inline_data') and part.inline_data:
                     img_data = part.inline_data.data
                     img = Image.open(BytesIO(img_data))
+                    img.save('promotion_image.png')  # Save locally
                     
-                    # Save locally
-                    img.save('promotion_image.png')
-                    
-                    # Prepare for Slack upload
                     img_byte_arr = BytesIO()
                     img.save(img_byte_arr, format='PNG')
                     img_byte_arr.seek(0)
                     
                     dm_channel = get_dm_channel(user_id)
                     if dm_channel:
-                        client.files_upload_v2(
+                        slack_client.files_upload_v2(
                             channels=dm_channel,
                             file=img_byte_arr,
                             filename="promotion_image.png",
@@ -338,68 +281,37 @@ def generate_promotion(prompt, user_id):
                     return "Promotion generated but DM failed."
         return FALLBACK_RESPONSES["promotion"]
     except Exception as e:
-        logging.error(f"Promotion generation error: {e}")
+        logging.error(f"Promotion error: {e}")
         return FALLBACK_RESPONSES["promotion"]
 
-# Weekly Sales Analysis with Plotly
-def generate_weekly_sales_analysis(user_id):
+def generate_weekly_analysis(user_id):
+    """Generate and upload weekly sales analysis charts to Slack."""
     df = load_sales_data()
     if df.empty:
-        return FALLBACK_RESPONSES["weekly analysis"]
+        return FALLBACK_RESPONSES["weekly"]
 
     try:
         # Weekly Sales Trend
         weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum().reset_index()
-        fig1 = px.line(
-            weekly_sales,
-            x='Order Date',
-            y='Price Each',
-            title="Weekly Sales Trend",
-            labels={'Price Each': 'Sales (INR)', 'Order Date': 'Week'},
-            template='plotly_white',
-            line_shape='spline',
-            color_discrete_sequence=['#4CAF50']
-        )
-        fig1.update_layout(title_font_size=20, xaxis_title_font_size=16, yaxis_title_font_size=16)
+        fig1 = px.line(weekly_sales, x='Order Date', y='Price Each', title="Weekly Sales Trend",
+                       labels={'Price Each': 'Sales (INR)'}, template='plotly_white', color_discrete_sequence=['#4CAF50'])
         img_byte_arr1 = BytesIO()
         fig1.write_image(img_byte_arr1, format='png')
         img_byte_arr1.seek(0)
 
         # Overall Sales Trend
         overall_sales = df.copy()
-        overall_sales['Cumulative Sales'] = overall_sales['Price Each'].cumsum()
-        fig2 = px.line(
-            overall_sales,
-            x='Order Date',
-            y='Cumulative Sales',
-            title="Overall Sales Trend",
-            labels={'Cumulative Sales': 'Cumulative Sales (INR)', 'Order Date': 'Date'},
-            template='plotly_white',
-            color_discrete_sequence=['#2196F3']
-        )
-        fig2.update_layout(title_font_size=20, xaxis_title_font_size=16, yaxis_title_font_size=16)
+        overall_sales['Cumulative'] = overall_sales['Price Each'].cumsum()
+        fig2 = px.line(overall_sales, x='Order Date', y='Cumulative', title="Overall Sales Trend",
+                       labels={'Cumulative': 'Total Sales (INR)'}, template='plotly_white', color_discrete_sequence=['#2196F3'])
         img_byte_arr2 = BytesIO()
         fig2.write_image(img_byte_arr2, format='png')
         img_byte_arr2.seek(0)
 
         # Sales Distribution
-        fig3 = px.histogram(
-            df,
-            x='Price Each',
-            nbins=30,
-            title="Sales Distribution",
-            labels={'Price Each': 'Sales Amount (INR)'},
-            template='plotly_white',
-            color_discrete_sequence=['#2196F3']
-        )
+        fig3 = px.histogram(df, x='Price Each', nbins=30, title="Sales Distribution",
+                            labels={'Price Each': 'Sales (INR)'}, template='plotly_white', color_discrete_sequence=['#FF9800'])
         fig3.update_traces(opacity=0.75)
-        fig3.update_layout(
-            title_font_size=20,
-            xaxis_title_font_size=16,
-            yaxis_title_font_size=16,
-            bargap=0.2,
-            showlegend=False
-        )
         img_byte_arr3 = BytesIO()
         fig3.write_image(img_byte_arr3, format='png')
         img_byte_arr3.seek(0)
@@ -407,20 +319,20 @@ def generate_weekly_sales_analysis(user_id):
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
             for i, img in enumerate([img_byte_arr1, img_byte_arr2, img_byte_arr3], 1):
-                client.files_upload_v2(
+                slack_client.files_upload_v2(
                     channels=dm_channel,
                     file=img,
-                    filename=f"weekly_analysis_{i}_{uuid.uuid4().hex[:8]}.png",
-                    title=f"Weekly Analysis Graph {i}"
+                    filename=f"weekly_{i}_{uuid.uuid4().hex[:8]}.png",
+                    title=f"Weekly Analysis {i}"
                 )
-            return "Weekly sales analysis (3 graphs) sent to your DM!"
-        return FALLBACK_RESPONSES["weekly analysis"]
+            return "Weekly analysis (3 charts) sent to your DM!"
+        return FALLBACK_RESPONSES["weekly"]
     except Exception as e:
         logging.error(f"Weekly analysis error: {e}")
-        return FALLBACK_RESPONSES["weekly analysis"]
+        return FALLBACK_RESPONSES["weekly"]
 
-# Sales Insights and Recommendations
 def generate_sales_insights():
+    """Generate sales insights and recommendations."""
     df = load_sales_data()
     inventory = load_inventory()
     if df.empty or inventory.empty:
@@ -441,56 +353,71 @@ def generate_sales_insights():
         stock = inventory[inventory['Product'] == product]['Stock'].iloc[0]
         price = inventory[inventory['Product'] == product]['Price'].iloc[0]
         sales = df[df['Product'] == product]['Quantity Ordered'].sum()
-        weekly_avg = weekly_sales.mean()
         demand_rate = (sales / len(weekly_sales)) * seasonal_factor if sales > 0 else 0.1
-        
         if stock < demand_rate:
-            recommendations.append(f"Stock up {product} (current: {stock}, suggested: {int(demand_rate * 2)})")
+            recommendations.append(f"Stock up {product} (current: {stock})")
         elif stock > demand_rate * 5:
-            recommendations.append(f"Decrease price of {product} (current stock: {stock}, low demand)")
-        elif trend == "increasing" and sales > weekly_avg:
-            recommendations.append(f"Increase price of {product} (high demand)")
+            recommendations.append(f"Decrease price of {product} (stock: {stock})")
 
-    return f"📊 Sales Insights:\nTotal Sales: INR {total_sales:,.2f}\nAverage Sale: INR {avg_sale:,.2f}\nTop Product: {top_product}\nTrend: {trend}\nRecommendations:\n" + "\n".join(recommendations)
+    return f"📊 Insights:\nTotal Sales: INR {total_sales:,.2f}\nAvg Sale: INR {avg_sale:,.2f}\nTop Product: {top_product}\nTrend: {trend}\nRecommendations:\n" + "\n".join(recommendations)
 
-# API Endpoints
+def generate_bar_chart(user_query, user_id):
+    """Generate a bar chart based on user query and upload to Slack."""
+    df = load_sales_data()
+    if df.empty:
+        return FALLBACK_RESPONSES["chart"]
+
+    try:
+        if "shoe brand" in user_query.lower():
+            sales_by_brand = df.groupby('Product')['Price Each'].sum().reset_index()
+            fig = px.bar(sales_by_brand, x='Product', y='Price Each', title="Sales by Shoe Brand",
+                         labels={'Price Each': 'Sales (INR)'}, template='plotly_white', color='Product', bargap=0.2)
+            img_byte_arr = BytesIO()
+            fig.write_image(img_byte_arr, format='png')
+            img_byte_arr.seek(0)
+            
+            dm_channel = get_dm_channel(user_id)
+            if dm_channel:
+                slack_client.files_upload_v2(
+                    channels=dm_channel,
+                    file=img_byte_arr,
+                    filename=f"chart_{uuid.uuid4().hex[:8]}.png",
+                    title="Sales by Shoe Brand"
+                )
+                return "Bar chart sent to your DM!"
+            return FALLBACK_RESPONSES["chart"]
+        return "Use 'shoe brand' in your chart request (e.g., 'chart create a bar chart for the sales by shoe brand')."
+    except Exception as e:
+        logging.error(f"Chart error: {e}")
+        return FALLBACK_RESPONSES["chart"]
+
+# --- Slack Event Handler ---
+
 @app.route('/slack/events', methods=['POST'])
 def slack_events():
+    """Handle Slack events and commands."""
     try:
-        raw_data = request.data.decode('utf-8')
-        logging.info(f"Raw request data: {raw_data}")
-
         data = request.get_json(silent=True)
         if not data:
-            logging.error("Failed to parse JSON from request")
+            logging.error("Invalid JSON")
             return Response("Invalid JSON", status=400)
 
-        logging.info(f"Parsed Slack event: {data}")
-
         if data.get('type') == 'url_verification':
-            challenge = data.get('challenge')
-            if not challenge:
-                logging.error("Challenge parameter missing")
-                return Response("Missing challenge", status=400)
-            logging.info(f"Returning challenge: {challenge}")
-            return jsonify({'challenge': challenge}), 200, {'Content-Type': 'application/json'}
+            return jsonify({'challenge': data.get('challenge')}), 200
 
         if 'event' in data and data['event'].get('type') == 'message' and 'text' in data['event']:
             user_id = data['event']['user']
             text = data['event']['text'].lower().strip()
-            logging.info(f"Processing message: '{text}' from {user_id}")
-
             if 'bot_id' in data['event']:
-                logging.info(f"Ignoring bot message from {user_id}")
                 return Response(status=200)
 
             if "register:" in text:
                 try:
                     _, details = text.split("register:", 1)
-                    business_name, owner_name, phone, business_type, email, language, address = [x.strip() for x in details.split(',', 6)]
-                    response = handle_customer_registration(user_id, {
-                        'business_name': business_name, 'owner_name': owner_name, 'phone': phone, 'business_type': business_type,
-                        'email': email, 'language': language, 'address': address
+                    parts = [x.strip() for x in details.split(',', 6)]
+                    response = handle_registration(user_id, {
+                        'business_name': parts[0], 'owner_name': parts[1], 'phone': parts[2], 'business_type': parts[3],
+                        'email': parts[4], 'language': parts[5], 'address': parts[6]
                     })
                 except:
                     response = FALLBACK_RESPONSES["register"]
@@ -501,8 +428,8 @@ def slack_events():
                     response = process_purchase(user_id, {'product': product, 'quantity': quantity})
                 except:
                     response = FALLBACK_RESPONSES["purchase"]
-            elif "weekly analysis" in text:
-                response = generate_weekly_sales_analysis(user_id)
+            elif "weekly" in text:
+                response = generate_weekly_analysis(user_id)
             elif "insights" in text:
                 response = generate_sales_insights()
             elif "promotion:" in text:
@@ -516,16 +443,13 @@ def slack_events():
             elif "chart" in text:
                 response = generate_bar_chart(text, user_id)
             else:
-                try:
-                    response = genai.generate_text(prompt=f"Respond to this: {text}").result.strip()
-                except:
-                    response = FALLBACK_RESPONSES["default"]
+                response = genai.generate_text(prompt=f"Respond to: {text}").result.strip() or FALLBACK_RESPONSES["default"]
 
-            client.chat_postMessage(channel=user_id, text=response)
+            slack_client.chat_postMessage(channel=user_id, text=response)
         return Response(status=200)
     except Exception as e:
-        logging.error(f"Slack event processing error: {e}")
-        return Response(f"Internal error: {str(e)}", status=500)
+        logging.error(f"Slack event error: {e}")
+        return Response(f"Error: {str(e)}", status=500)
 
 if __name__ == "__main__":
     app.run()
