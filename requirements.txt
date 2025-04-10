@@ -6,6 +6,6 @@ fpdf==1.7.2
 google-generativeai==0.3.2
 twilio==8.5.0
 pillow==9.5.0
-numpy==1.24.3
+numpy==1.23.5
 scipy==1.10.1
 pytrends==4.9.2
