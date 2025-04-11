@@ -13,9 +13,8 @@ from twilio.rest import Client
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
-from google.api_core import exceptions
+from google.api_core import exceptions  # Added for retry handling
 import time
-from functools import lru_cache
 from pytrends.request import TrendReq
 from fpdf import FPDF
 from PIL import Image, ImageDraw, ImageFont
@@ -38,7 +37,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
-GENAI_API_KEY = os.environ.get("GENAI_API_KEY", "your-default-api-key")
+GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")
@@ -62,16 +61,17 @@ pytrends = TrendReq(hl='en-US', tz=360, retries=2, backoff_factor=0.1)
 app = FastAPI()
 translator = Translator()
 
+# Expanded Fallback Responses
 FALLBACK_RESPONSES = {
-    "register": "Sorry, registration failed. Please try again later or check your input format.",
-    "purchase": "Purchase could not be processed. Please check product availability or your registration.",
-    "weekly analysis": "Weekly analysis unavailable. Data might be missing or not implemented.",
-    "insights": "Insights generation failed. Please try again later.",
+    "register": "Sorry, registration failed. Please try again later.",
+    "purchase": "Purchase could not be processed. Please check back later.",
+    "weekly analysis": "Weekly analysis unavailable. Data might be missing.",
+    "insights": "Insights generation failed. Please try again.",
     "insights_api_quota": "Sales insights unavailable due to API rate limits. Please wait and retry.",
     "insights_no_data": "Sales insights unavailable because no sales data was found.",
-    "promotion": "Promotion image generation failed. Please try again later.",
+    "promotion": "Promotion image generation failed. Try again later.",
     "promotion_no_image": "Couldn’t generate promotion image due to missing default image or network issues.",
-    "whatsapp": "Failed to send WhatsApp message. Please register or check configuration.",
+    "whatsapp": "Failed to send WhatsApp message. Please try again.",
     "invoice": "Sorry, invoice generation failed. Please try again.",
     "chart": "Chart generation failed. Please try again later.",
     "chart_api_quota": "Chart generation failed due to API rate limits. Please wait and retry.",
@@ -111,7 +111,7 @@ def translate_message(text, target_lang):
 
 def send_whatsapp_message(user_id, message):
     if not twilio_client:
-        logging.error("WhatsApp not configured: Twilio credentials missing.")
+        logging.error(f"WhatsApp not configured for {user_id}: Twilio credentials missing.")
         return FALLBACK_RESPONSES["whatsapp"]
     if user_id not in user_states or 'phone' not in user_states[user_id]:
         logging.error(f"WhatsApp failed for {user_id}: User not registered.")
@@ -251,7 +251,7 @@ def handle_customer_registration(user_id, text):
         except Exception as e:
             logging.error(f"Registration error for {user_id}: {e}")
             return FALLBACK_RESPONSES["register"]
-    logging.warning(f"Registration failed for {user_id}: Invalid format, expected 'register: ...'")
+    logging.warning(f"Registration failed for {user_id}: Invalid format.")
     return "Please use: `register: name, email, phone, language, address`"
 
 # Purchase Processing
@@ -260,7 +260,7 @@ def process_purchase(user_id, text):
         logging.error(f"Purchase failed for {user_id}: User not registered.")
         return "Please register first using: `register: name, email, phone, language, address`"
     if "purchase:" not in text.lower():
-        logging.warning(f"Purchase failed for {user_id}: Invalid format, expected 'purchase: ...'")
+        logging.warning(f"Purchase failed for {user_id}: Invalid format.")
         return "Please use: `purchase: product, quantity`"
     try:
         _, details = text.lower().split("purchase:", 1)
@@ -272,7 +272,7 @@ def process_purchase(user_id, text):
             return f"Product '{product}' not found in inventory."
         stock = inventory[inventory['Product'] == product]['Stock'].iloc[0]
         if stock < quantity:
-            logging.error(f"Purchase failed for {user_id}: Insufficient stock for '{product}' (available: {stock}).")
+            logging.error(f"Purchase failed for {user_id}: Insufficient stock for '{product}'.")
             return f"Insufficient stock for '{product}'. Available: {stock}"
         price = inventory[inventory['Product'] == product]['Price'].iloc[0]
         update_inventory(product, quantity)
@@ -343,7 +343,7 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
             users_df = load_users()
             customer = users_df[users_df['customer_id'] == customer_id].iloc[0] if customer_id in users_df['customer_id'].values else None
             if not customer:
-                logging.error(f"Invoice failed for {user_id}: Customer ID {customer_id} not found in users.csv.")
+                logging.error(f"Invoice failed for {user_id}: Customer not found.")
                 return "Customer not found in users.csv."
 
             company_info = "PSG College of Technology\nCoimbatore, Tamil Nadu\nPhone: 123-456-7890"
@@ -403,13 +403,13 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
                     title="Invoice"
                 )
             return f"Invoice generated and sent to your DM! Saved as {os.path.basename(invoice_path)}"
-        logging.warning(f"Invoice not uploaded for {user_id}: No DM channel available.")
+        logging.warning(f"Invoice not uploaded for {user_id}: No DM channel.")
         return f"Invoice generated at {invoice_path} but not uploaded (no DM channel)."
     except Exception as e:
         logging.error(f"Invoice error for {user_id}: {e}")
         return FALLBACK_RESPONSES["invoice"]
 
-# Promotion Generation with Detailed Fallback
+# Promotion Generation (Fixed to Always Send Image)
 def generate_promotion(prompt, user_id):
     try:
         # Parse prompt
@@ -420,7 +420,7 @@ def generate_promotion(prompt, user_id):
         shop_match = re.search(r'(?:for|at)\s+([\w\s]+)$', prompt, re.IGNORECASE)
         shop_name = shop_match.group(1) if shop_match else "Our Store"
 
-        # Try Unsplash, fall back to default
+        # Try Unsplash, fall back to local default or gray image
         placeholder_urls = {
             "shoe": "https://images.unsplash.com/photo-1542291026-7eec264c27ff",
             "phone": "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9",
@@ -433,13 +433,15 @@ def generate_promotion(prompt, user_id):
             response = requests.get(img_url, timeout=5)
             response.raise_for_status()
             product_img = Image.open(BytesIO(response.content)).resize((200, 200))
+            logging.info(f"Loaded Unsplash image for {product} for {user_id}.")
         except Exception as e:
-            logging.warning(f"Failed to fetch image from {img_url} for {user_id}: {e}")
+            logging.warning(f"Failed to fetch Unsplash image {img_url} for {user_id}: {e}")
             if os.path.exists(DEFAULT_PROMO_IMG):
                 product_img = Image.open(DEFAULT_PROMO_IMG).resize((200, 200))
+                logging.info(f"Using default image {DEFAULT_PROMO_IMG} for {user_id}.")
             else:
-                logging.error(f"Promotion failed for {user_id}: Default image {DEFAULT_PROMO_IMG} not found.")
-                return FALLBACK_RESPONSES["promotion_no_image"]
+                product_img = Image.new('RGB', (200, 200), color='gray')
+                logging.warning(f"No default image found at {DEFAULT_PROMO_IMG} for {user_id}, using gray placeholder.")
 
         # Create promotion image
         img = Image.new('RGB', (600, 400), color=(255, 215, 0))  # Gold background
@@ -448,12 +450,10 @@ def generate_promotion(prompt, user_id):
 
         try:
             title_font = ImageFont.truetype("arial.ttf", 50)
-            text_font = ImageFont.truetype("arial.ttf", 30)
             shop_font = ImageFont.truetype("arial.ttf", 40)
         except:
-            logging.warning(f"Font loading failed for {user_id}: Using default font.")
+            logging.warning(f"Font loading failed for {user_id}, using default.")
             title_font = ImageFont.load_default()
-            text_font = ImageFont.load_default()
             shop_font = ImageFont.load_default()
 
         d.text((50, 50), discount.upper(), fill='red', font=title_font)
@@ -465,6 +465,7 @@ def generate_promotion(prompt, user_id):
 
         promo_file = os.path.join(BASE_DIR, f"promotion_{uuid.uuid4().hex[:8]}.png")
         img.save(promo_file)
+        logging.info(f"Promotion image saved at {promo_file} for {user_id}.")
 
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
@@ -475,18 +476,19 @@ def generate_promotion(prompt, user_id):
                     filename=os.path.basename(promo_file),
                     title=f"Promotion: {prompt}"
                 )
+            logging.info(f"Promotion image sent to DM for {user_id}.")
             return f"Promotion image generated and sent to your DM!\nText: {prompt}"
-        logging.error(f"Promotion upload failed for {user_id}: No DM channel available.")
-        return "Failed to upload promotion image (no DM channel)."
+        logging.error(f"Promotion upload failed for {user_id}: No DM channel.")
+        return FALLBACK_RESPONSES["promotion"]
     except Exception as e:
         logging.error(f"Promotion error for {user_id}: {e}")
         return FALLBACK_RESPONSES["promotion"]
 
-# Chart Generation with Detailed Fallback
+# Chart Generation (Fixed with Retry and Cache)
 def generate_chart(user_id, query):
     df = load_sales_data()
     if df.empty:
-        logging.error(f"Chart failed for {user_id}: No sales data available in {SALES_DATA_PATH}.")
+        logging.error(f"Chart failed for {user_id}: No sales data in {SALES_DATA_PATH}.")
         return FALLBACK_RESPONSES["chart_no_data"]
 
     # Check cache first
@@ -508,6 +510,7 @@ def generate_chart(user_id, query):
                 response = model.generate_content(prompt)
                 code = response.text.strip()
                 chart_cache[cache_key] = code  # Cache the result
+                logging.info(f"Generated Plotly code for {user_id}: {code}")
                 break
             except exceptions.ResourceExhausted as e:
                 if attempt < retries - 1:
@@ -523,14 +526,14 @@ def generate_chart(user_id, query):
 
     try:
         if "px." not in code.lower():
-            logging.error(f"Chart failed for {user_id}: Invalid Plotly code generated - {code}")
+            logging.error(f"Chart failed for {user_id}: Invalid Plotly code - {code}")
             return FALLBACK_RESPONSES["chart_invalid_query"]
 
         local_vars = {"df": df, "px": px}
         exec(code, globals(), local_vars)
         fig = local_vars.get("fig")
         if not fig:
-            logging.error(f"Chart failed for {user_id}: No figure generated from Plotly code - {code}")
+            logging.error(f"Chart failed for {user_id}: No figure generated from code - {code}")
             return FALLBACK_RESPONSES["chart"]
 
         img_byte_arr = BytesIO()
@@ -545,19 +548,79 @@ def generate_chart(user_id, query):
                 filename=f"chart_{uuid.uuid4().hex[:8]}.png",
                 title="Sales Chart"
             )
+            logging.info(f"Chart sent to DM for {user_id}.")
             return "Chart sent to your DM!"
-        logging.error(f"Chart upload failed for {user_id}: No DM channel available.")
+        logging.error(f"Chart upload failed for {user_id}: No DM channel.")
         return FALLBACK_RESPONSES["chart"]
     except Exception as e:
         logging.error(f"Chart rendering error for {user_id}: {e}")
         return FALLBACK_RESPONSES["chart"]
 
-# Sales Insights with Detailed Fallback
-def generate_sales_insights(user_id=None):  # Added user_id for logging
+# Weekly Sales Analysis
+def generate_weekly_sales_analysis(user_id):
+    df = load_sales_data()
+    if df.empty:
+        logging.error(f"Weekly analysis failed for {user_id}: No sales data.")
+        return FALLBACK_RESPONSES["weekly analysis"]
+    try:
+        weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
+        plt.figure(figsize=(12, 6))
+        plt.plot(weekly_sales.index, weekly_sales.values, marker='o', linestyle='-', color='#4CAF50')
+        plt.title('Weekly Sales Trend')
+        plt.xlabel('Week')
+        plt.ylabel('Sales (INR)')
+        plt.grid(True)
+        weekly_trend_file = os.path.join(BASE_DIR, f"weekly_trend_{uuid.uuid4().hex[:8]}.png")
+        plt.savefig(weekly_trend_file)
+        plt.close()
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(df['Order Date'], df['Price Each'].cumsum(), color='#2196F3')
+        plt.title('Overall Sales Trend')
+        plt.xlabel('Date')
+        plt.ylabel('Cumulative Sales (INR)')
+        plt.grid(True)
+        overall_trend_file = os.path.join(BASE_DIR, f"overall_trend_{uuid.uuid4().hex[:8]}.png")
+        plt.savefig(overall_trend_file)
+        plt.close()
+
+        mu, std = norm.fit(df['Price Each'].dropna())
+        plt.figure(figsize=(10, 6))
+        sns.histplot(df['Price Each'], kde=True, stat="density", color='#2196F3')
+        x = np.linspace(df['Price Each'].min(), df['Price Each'].max(), 100)
+        plt.plot(x, norm.pdf(x, mu, std), 'r-', lw=2, label=f'Normal fit (μ={mu:.2f}, σ={std:.2f})')
+        plt.title('Sales Distribution with Normal Fit')
+        plt.xlabel('Sales Amount (INR)')
+        plt.ylabel('Density')
+        plt.legend()
+        sales_dist_file = os.path.join(BASE_DIR, f"sales_distribution_{uuid.uuid4().hex[:8]}.png")
+        plt.savefig(sales_dist_file)
+        plt.close()
+
+        dm_channel = get_dm_channel(user_id)
+        if dm_channel:
+            for i, file in enumerate([weekly_trend_file, overall_trend_file, sales_dist_file], 1):
+                with open(file, 'rb') as f:
+                    client.files_upload_v2(
+                        channel=dm_channel,
+                        file=f,
+                        filename=os.path.basename(file),
+                        title=f"Weekly Analysis Graph {i}"
+                    )
+            logging.info(f"Weekly analysis sent to DM for {user_id}.")
+            return "Weekly sales analysis (3 graphs) sent to your DM!"
+        logging.error(f"Weekly analysis upload failed for {user_id}: No DM channel.")
+        return FALLBACK_RESPONSES["weekly analysis"]
+    except Exception as e:
+        logging.error(f"Weekly analysis error for {user_id}: {e}")
+        return FALLBACK_RESPONSES["weekly analysis"]
+
+# Sales Insights (Fixed with Retry and Cache)
+def generate_sales_insights(user_id=None):
     df = load_sales_data()
     inventory_df = load_inventory()
     if df.empty:
-        logging.error(f"Insights failed for {user_id}: No sales data available in {SALES_DATA_PATH}.")
+        logging.error(f"Insights failed for {user_id}: No sales data in {SALES_DATA_PATH}.")
         return FALLBACK_RESPONSES["insights_no_data"]
     try:
         total_sales = df["Price Each"].sum()
@@ -565,7 +628,7 @@ def generate_sales_insights(user_id=None):  # Added user_id for logging
         best_selling_product = df.groupby("Product")["Quantity Ordered"].sum().idxmax()
 
         # Use cached trend score if available
-        if best_selling_product in trend_cache:
+        if user_id and best_selling_product in trend_cache:
             trend_score = trend_cache[best_selling_product]
             logging.info(f"Using cached trend score for {user_id} - {best_selling_product}: {trend_score}")
         else:
@@ -575,7 +638,9 @@ def generate_sales_insights(user_id=None):  # Added user_id for logging
                     pytrends.build_payload(kw_list=[best_selling_product], timeframe='now 7-d')
                     trends = pytrends.interest_over_time()
                     trend_score = trends[best_selling_product].mean() / 100 if best_selling_product in trends else 0
-                    trend_cache[best_selling_product] = trend_score  # Cache for 24 hours
+                    if user_id:
+                        trend_cache[best_selling_product] = trend_score  # Cache only if user_id present
+                    logging.info(f"Trend score for {best_selling_product}: {trend_score} for {user_id}")
                     break
                 except Exception as e:
                     if "429" in str(e) and attempt < retries - 1:
@@ -633,8 +698,7 @@ def process_query(text, user_id, event_channel):
         elif "purchase:" in text:
             return process_purchase(user_id, text)
         elif "weekly analysis" in text:
-            logging.warning(f"Weekly analysis not implemented for {user_id}.")
-            return FALLBACK_RESPONSES["weekly analysis"]
+            return generate_weekly_sales_analysis(user_id)
         elif "insights" in text or "sales insights" in text:
             return generate_sales_insights(user_id)
         elif "promotion:" in text or "generate promotion" in text:
@@ -660,11 +724,8 @@ def process_query(text, user_id, event_channel):
                         logging.warning(f"Gemini API quota exceeded for {user_id}, retrying in {wait_time}s: {e}")
                         time.sleep(wait_time)
                     else:
-                        logging.error(f"Default query failed for {user_id} due to API quota after {retries} attempts: {e}")
+                        logging.error(f"Default query failed for {user_id} due to API quota: {e}")
                         return FALLBACK_RESPONSES["default"]
-                except Exception as e:
-                    logging.error(f"Default query error for {user_id}: {e}")
-                    return FALLBACK_RESPONSES["default"]
     except Exception as e:
         logging.error(f"Query processing error for {user_id}: {e}")
         return FALLBACK_RESPONSES["default"]
