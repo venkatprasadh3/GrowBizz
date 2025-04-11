@@ -344,6 +344,7 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
             header = ["Product", "Qty", "Unit Price", "Total"]
             invoice_items = [[product['product_name'], 1, float(product['price']), float(product['price'])]]
 
+
             total_before_gst = float(product['price'])
             gst_rate = 0.18
             gst_amount = total_before_gst * gst_rate
@@ -401,7 +402,7 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
         logging.error(f"Invoice error for {user_id}: {e}")
         return FALLBACK_RESPONSES["invoice"]
 
-# Promotion Generation (Fixed to Always Send Image)
+# Promotion Generation (Fixed to Prevent Restart and Ensure Upload)
 def generate_promotion(prompt, user_id):
     try:
         # Parse prompt
@@ -412,7 +413,7 @@ def generate_promotion(prompt, user_id):
         shop_match = re.search(r'(?:shop|store)\s+named?\s+["\']?([\w\s]+)["\']?', prompt, re.IGNORECASE)
         shop_name = shop_match.group(1) if shop_match else "Our Store"
 
-        # Try Unsplash, fall back to local default or gray image
+        # Image source
         placeholder_urls = {
             "shoe": "https://images.unsplash.com/photo-1542291026-7eec264c27ff",
             "phone": "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9",
@@ -420,70 +421,86 @@ def generate_promotion(prompt, user_id):
             "monitor": "https://images.unsplash.com/photo-1593642532973-d31b6557fa68",
             "cable": "https://images.unsplash.com/photo-1610056490484-256a73c68d65"
         }
-        img_url = placeholder_urls.get(product.lower(), "https://images.unsplash.com/photo-1505740420928-5e560c06d30e")
-        try:
-            response = requests.get(img_url, timeout=5)
-            response.raise_for_status()
-            product_img = Image.open(BytesIO(response.content)).resize((200, 200))
-            logging.info(f"Loaded Unsplash image for {product} for {user_id}.")
-        except Exception as e:
-            logging.warning(f"Failed to fetch Unsplash image {img_url} for {user_id}: {e}")
-            if os.path.exists(DEFAULT_PROMO_IMG):
+        img_url = placeholder_urls.get(product.lower())
+        if img_url:
+            try:
+                response = requests.get(img_url, timeout=5)
+                response.raise_for_status()
+                product_img = Image.open(BytesIO(response.content)).resize((200, 200))
+                logging.info(f"Loaded Unsplash image for {product} for {user_id}.")
+            except Exception as e:
+                logging.warning(f"Unsplash fetch failed for {user_id}: {e}")
+                product_img = None
+        else:
+            product_img = None
+
+        if not product_img and os.path.exists(DEFAULT_PROMO_IMG):
+            try:
                 product_img = Image.open(DEFAULT_PROMO_IMG).resize((200, 200))
                 logging.info(f"Using default image {DEFAULT_PROMO_IMG} for {user_id}.")
-            else:
-                product_img = Image.new('RGB', (200, 200), color='gray')
-                logging.warning(f"No default image at {DEFAULT_PROMO_IMG} for {user_id}, using gray placeholder.")
+            except Exception as e:
+                logging.warning(f"Default image load failed for {user_id}: {e}")
+                product_img = None
 
-        # Create promotion image
-        img = Image.new('RGB', (600, 400), color=(255, 215, 0))  # Gold background
+        if not product_img:
+            product_img = Image.new('RGB', (200, 200), color='gray')
+            logging.info(f"Using gray placeholder for {user_id}.")
+
+        # Create image
+        img = Image.new('RGB', (600, 400), color=(255, 215, 0))
         d = ImageDraw.Draw(img)
-        d.rectangle([(10, 10), (590, 390)], outline="black", width=5)
-
         try:
-            title_font = ImageFont.truetype("arial.ttf", 50)
-            shop_font = ImageFont.truetype("arial.ttf", 40)
+            title_font = ImageFont.truetype("arial.ttf", 40)  # Reduced size
+            shop_font = ImageFont.truetype("arial.ttf", 30)
         except:
-            logging.warning(f"Font loading failed for {user_id}, using default.")
+            logging.warning(f"Font load failed for {user_id}, using default.")
             title_font = ImageFont.load_default()
             shop_font = ImageFont.load_default()
 
         d.text((50, 50), discount.upper(), fill='red', font=title_font)
-        d.rectangle([(45, 45), (45 + d.textlength(discount.upper(), title_font), 95)], fill=None, outline='red', width=3)
         img.paste(product_img, (350, 100))
         shop_text = f"At {shop_name}"
         shop_x = (600 - d.textlength(shop_text, shop_font)) / 2
         d.text((shop_x, 300), shop_text, fill='blue', font=shop_font)
 
-        promo_file = os.path.join(BASE_DIR, f"promotion_{uuid.uuid4().hex[:8]}.png")
-        img.save(promo_file)
-        logging.info(f"Promotion image saved at {promo_file} for {user_id}.")
+        promo_file = f"promotion_{uuid.uuid4().hex[:8]}.png"
+        try:
+            img.save(promo_file, 'PNG')
+            logging.info(f"Promotion image saved as {promo_file} for {user_id}.")
+        except Exception as e:
+            logging.error(f"Image save failed for {user_id}: {e}")
+            return FALLBACK_RESPONSES["promotion"]
 
+        # Upload to DM
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
-            with open(promo_file, 'rb') as f:
-                client.files_upload_v2(
-                    channel=dm_channel,
-                    file=f,
-                    filename=os.path.basename(promo_file),
-                    title=f"Promotion: {prompt}"
-                )
-            logging.info(f"Promotion image uploaded to DM for {user_id}.")
-            return f"Promotion image generated and sent to your DM!\nText: {prompt}"
-        logging.error(f"Promotion upload failed for {user_id}: No DM channel.")
+            try:
+                with open(promo_file, 'rb') as f:
+                    client.files_upload_v2(
+                        channel=dm_channel,
+                        file=f,
+                        filename=promo_file,
+                        title=f"Promotion: {prompt}"
+                    )
+                logging.info(f"Promotion image uploaded to DM for {user_id}.")
+                os.remove(promo_file)  # Clean up
+                return f"Promotion image sent to your DM!\nText: {prompt}"
+            except SlackApiError as e:
+                logging.error(f"Slack upload failed for {user_id}: {e}")
+                return FALLBACK_RESPONSES["promotion"]
+        logging.warning(f"No DM channel for {user_id}.")
         return FALLBACK_RESPONSES["promotion"]
     except Exception as e:
-        logging.error(f"Promotion error for {user_id}: {e}")
+        logging.error(f"Promotion generation crashed for {user_id}: {e}")
         return FALLBACK_RESPONSES["promotion"]
 
-# Chart Generation (Fixed with Fallback)
+# Chart Generation (Fixed with Robust Fallback)
 def generate_chart(user_id, query):
     df = load_sales_data()
     if df.empty:
-        logging.error(f"Chart failed for {user_id}: No sales data in {SALES_DATA_PATH}.")
+        logging.error(f"Chart failed for {user_id}: No sales data.")
         return FALLBACK_RESPONSES["chart_no_data"]
 
-    # Check cache first
     cache_key = f"{query}_{df.to_string()[:100]}"
     if cache_key in chart_cache:
         logging.info(f"Using cached chart code for {user_id}: {chart_cache[cache_key]}")
@@ -493,8 +510,7 @@ def generate_chart(user_id, query):
         prompt = f"""
         Generate Plotly Express code for: {query}. Use this data:
         {df.to_string()}
-        Return just the code, make it professional and sleek with proper bar spacing if applicable.
-        Use columns: 'Product', 'Quantity Ordered', 'Price Each', 'Order Date'.
+        Return just the code, use columns: 'Product', 'Quantity Ordered', 'Price Each', 'Order Date'.
         """
         retries = 3
         for attempt in range(retries):
@@ -506,47 +522,50 @@ def generate_chart(user_id, query):
                 break
             except exceptions.ResourceExhausted as e:
                 if attempt < retries - 1:
-                    wait_time = 22 * (2 ** attempt)  # Exponential backoff: 22s, 44s, 88s
+                    wait_time = 22 * (2 ** attempt)
                     logging.warning(f"Gemini API quota exceeded for {user_id}, retrying in {wait_time}s: {e}")
                     time.sleep(wait_time)
                 else:
                     logging.error(f"Gemini API quota exhausted for {user_id} after {retries} attempts: {e}")
                     code = "fig = px.bar(df, x='Product', y='Price Each', title='Sales by Product')"
+                    chart_cache[cache_key] = code
                     logging.info(f"Using fallback chart code for {user_id}: {code}")
             except Exception as e:
-                logging.error(f"Chart generation error for {user_id}: {e}")
-                return FALLBACK_RESPONSES["chart"]
+                logging.error(f"Chart code generation failed for {user_id}: {e}")
+                code = "fig = px.bar(df, x='Product', y='Price Each', title='Sales by Product')"
+                chart_cache[cache_key] = code
+                break
 
     try:
-        if "px." not in code.lower():
-            logging.error(f"Chart failed for {user_id}: Invalid Plotly code - {code}")
-            return FALLBACK_RESPONSES["chart_invalid_query"]
-
         local_vars = {"df": df, "px": px}
         exec(code, globals(), local_vars)
         fig = local_vars.get("fig")
         if not fig:
-            logging.error(f"Chart failed for {user_id}: No figure generated - {code}")
+            logging.error(f"Chart execution failed for {user_id}: No figure generated.")
             return FALLBACK_RESPONSES["chart"]
 
         img_byte_arr = BytesIO()
-        fig.write_image(img_byte_arr, format="png")
+        fig.write_image(img_byte_arr, format="png", engine="kaleido")
         img_byte_arr.seek(0)
 
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
-            client.files_upload_v2(
-                channel=dm_channel,
-                file=img_byte_arr,
-                filename=f"chart_{uuid.uuid4().hex[:8]}.png",
-                title="Sales Chart"
-            )
-            logging.info(f"Chart uploaded to DM for {user_id}.")
-            return "Chart sent to your DM!"
-        logging.error(f"Chart upload failed for {user_id}: No DM channel.")
+            try:
+                client.files_upload_v2(
+                    channel=dm_channel,
+                    file=img_byte_arr,
+                    filename=f"chart_{uuid.uuid4().hex[:8]}.png",
+                    title="Sales Chart"
+                )
+                logging.info(f"Chart uploaded to DM for {user_id}.")
+                return "Chart sent to your DM!"
+            except SlackApiError as e:
+                logging.error(f"Chart upload failed for {user_id}: {e}")
+                return FALLBACK_RESPONSES["chart"]
+        logging.warning(f"No DM channel for {user_id}.")
         return FALLBACK_RESPONSES["chart"]
     except Exception as e:
-        logging.error(f"Chart rendering error for {user_id}: {e}")
+        logging.error(f"Chart rendering/upload failed for {user_id}: {e}")
         return FALLBACK_RESPONSES["chart"]
 
 # Weekly Sales Analysis
