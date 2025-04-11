@@ -29,13 +29,14 @@ import plotly.express as px
 import datetime
 import seaborn as sns
 from googletrans import Translator
+import requests  # For downloading placeholder images
 
 # Configuration and Constants
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
-GENAI_API_KEY = os.environ.get("GENAI_API_KEY", "your-default-api-key")  # Replace with your actual key
+GENAI_API_KEY = os.environ.get("GENAI_API_KEY", "your-default-api-key")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "")
@@ -171,7 +172,6 @@ def load_sales_data():
     try:
         if os.path.exists(SALES_DATA_PATH):
             df = pd.read_csv(SALES_DATA_PATH)
-            # Explicitly handle both date formats from your sample
             df['Order Date'] = pd.to_datetime(df['Order Date'], format='%m/%d/%y %H:%M', errors='coerce').fillna(
                 pd.to_datetime(df['Order Date'], format='%m-%d-%Y %H:%M', errors='coerce')
             )
@@ -383,24 +383,34 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
         logging.error(f"Invoice error: {e}")
         return FALLBACK_RESPONSES["invoice"]
 
-# Promotion Generation (Enhanced PIL-based with context)
+# Promotion Generation (Enhanced with Placeholder Image)
 def generate_promotion(prompt, user_id):
     try:
-        # Parse prompt for key elements (e.g., discount, product, shop name)
+        # Parse prompt
         discount_match = re.search(r'(\d+%?|free|buy \d+ get \d+)', prompt, re.IGNORECASE)
         discount = discount_match.group(0) if discount_match else "Special Offer"
-        product_match = re.search(r'(shoes?|phones?|headphones?|monitors?|cables?)', prompt, re.IGNORECASE)
-        product = product_match.group(0) if product_match else "Products"
+        product_match = re.search(r'(shoe|phone|headphone|monitor|cable)', prompt, re.IGNORECASE)
+        product = product_match.group(0) if product_match else "Product"
         shop_match = re.search(r'(?:for|at)\s+([\w\s]+)$', prompt, re.IGNORECASE)
         shop_name = shop_match.group(1) if shop_match else "Our Store"
 
-        # Create image
+        # Download a placeholder image based on product
+        placeholder_urls = {
+            "shoe": "https://via.placeholder.com/200?text=Shoe",
+            "phone": "https://via.placeholder.com/200?text=Phone",
+            "headphone": "https://via.placeholder.com/200?text=Headphone",
+            "monitor": "https://via.placeholder.com/200?text=Monitor",
+            "cable": "https://via.placeholder.com/200?text=Cable"
+        }
+        img_url = placeholder_urls.get(product.lower(), "https://via.placeholder.com/200?text=Product")
+        response = requests.get(img_url)
+        product_img = Image.open(BytesIO(response.content)).resize((200, 200))
+
+        # Create promotion image
         img = Image.new('RGB', (600, 400), color=(255, 215, 0))  # Gold background
         d = ImageDraw.Draw(img)
-        
-        # Add border
         d.rectangle([(10, 10), (590, 390)], outline="black", width=5)
-        
+
         # Load fonts
         try:
             title_font = ImageFont.truetype("arial.ttf", 50)
@@ -411,24 +421,21 @@ def generate_promotion(prompt, user_id):
             text_font = ImageFont.load_default()
             shop_font = ImageFont.load_default()
 
-        # Add discount text (highlighted)
+        # Add discount text
         d.text((50, 50), discount.upper(), fill='red', font=title_font)
         d.rectangle([(45, 45), (45 + d.textlength(discount.upper(), title_font), 95)], fill=None, outline='red', width=3)
-        
-        # Add product text
-        d.text((50, 150), f"on {product.capitalize()}", fill='black', font=text_font)
-        
+
+        # Add product image
+        img.paste(product_img, (350, 100))
+
         # Add shop name
         shop_text = f"At {shop_name}"
-        shop_x = (600 - d.textlength(shop_text, shop_font)) / 2  # Center horizontally
-        d.text((shop_x, 250), shop_text, fill='blue', font=shop_font)
-        
-        # Add simple decorative element (e.g., starburst)
-        d.polygon([(550, 50), (570, 70), (590, 50), (570, 30)], fill='red', outline='black')
+        shop_x = (600 - d.textlength(shop_text, shop_font)) / 2
+        d.text((shop_x, 300), shop_text, fill='blue', font=shop_font)
 
         promo_file = os.path.join(BASE_DIR, f"promotion_{uuid.uuid4().hex[:8]}.png")
         img.save(promo_file)
-        
+
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
             with open(promo_file, 'rb') as f:
@@ -444,7 +451,7 @@ def generate_promotion(prompt, user_id):
         logging.error(f"Promotion error: {e}")
         return FALLBACK_RESPONSES["promotion"]
 
-# Chart Generation (Fixed with explicit error handling)
+# Chart Generation (Using sales_data.csv)
 def generate_chart(user_id, query):
     df = load_sales_data()
     if df.empty:
@@ -456,27 +463,27 @@ def generate_chart(user_id, query):
         Generate Plotly Express code for: {query}. Use this data:
         {df.to_string()}
         Return just the code, make it professional and sleek with proper bar spacing if applicable.
-        Ensure the code uses columns: 'Product', 'Quantity Ordered', 'Price Each', 'Order Date'.
+        Use columns: 'Product', 'Quantity Ordered', 'Price Each', 'Order Date'.
         """
         response = model.generate_content(prompt)
         code = response.text.strip()
         logging.info(f"Generated Plotly code: {code}")
-        
+
         if "px." not in code.lower():
             logging.error(f"Invalid Plotly code generated: {code}")
             return "Invalid chart request from model."
-        
+
         local_vars = {"df": df, "px": px}
         exec(code, globals(), local_vars)
         fig = local_vars.get("fig")
         if not fig:
             logging.error("No figure generated from Plotly code.")
             return "No figure generated from code."
-        
+
         img_byte_arr = BytesIO()
         fig.write_image(img_byte_arr, format="png")
         img_byte_arr.seek(0)
-        
+
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
             client.files_upload_v2(
@@ -492,7 +499,7 @@ def generate_chart(user_id, query):
         logging.error(f"Chart error: {e}")
         return f"Chart generation failed: {str(e)}"
 
-# Weekly Sales Analysis (Fixed with explicit error handling)
+# Weekly Sales Analysis (Using Matplotlib and sales_data.csv)
 def generate_weekly_sales_analysis(user_id):
     df = load_sales_data()
     if df.empty:
@@ -500,48 +507,56 @@ def generate_weekly_sales_analysis(user_id):
         return FALLBACK_RESPONSES["weekly analysis"]
     try:
         weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
-        if weekly_sales.empty:
-            logging.warning("No valid weekly sales data.")
-            return "No valid weekly sales data available."
-        
-        fig1 = px.line(x=weekly_sales.index, y=weekly_sales.values, title="Weekly Sales Trend", 
-                       labels={"y": "Sales (INR)", "x": "Week"}, line_shape='spline', color_discrete_sequence=['#4CAF50'])
-        img_byte_arr1 = BytesIO()
-        fig1.write_image(img_byte_arr1, format="png")
-        img_byte_arr1.seek(0)
+        plt.figure(figsize=(12, 6))
+        plt.plot(weekly_sales.index, weekly_sales.values, marker='o', linestyle='-', color='#4CAF50')
+        plt.title('Weekly Sales Trend')
+        plt.xlabel('Week')
+        plt.ylabel('Sales (INR)')
+        plt.grid(True)
+        weekly_trend_file = os.path.join(BASE_DIR, f"weekly_trend_{uuid.uuid4().hex[:8]}.png")
+        plt.savefig(weekly_trend_file)
+        plt.close()
 
-        fig2 = px.line(x=df['Order Date'], y=df['Price Each'].cumsum(), title="Overall Sales Trend", 
-                       labels={"y": "Cumulative Sales (INR)", "x": "Date"}, color_discrete_sequence=['#2196F3'])
-        img_byte_arr2 = BytesIO()
-        fig2.write_image(img_byte_arr2, format="png")
-        img_byte_arr2.seek(0)
+        plt.figure(figsize=(12, 6))
+        plt.plot(df['Order Date'], df['Price Each'].cumsum(), color='#2196F3')
+        plt.title('Overall Sales Trend')
+        plt.xlabel('Date')
+        plt.ylabel('Cumulative Sales (INR)')
+        plt.grid(True)
+        overall_trend_file = os.path.join(BASE_DIR, f"overall_trend_{uuid.uuid4().hex[:8]}.png")
+        plt.savefig(overall_trend_file)
+        plt.close()
 
         mu, std = norm.fit(df['Price Each'].dropna())
-        fig3 = px.histogram(df, x="Price Each", nbins=20, title="Sales Distribution", 
-                            histnorm='density', color_discrete_sequence=['#2196F3'])
+        plt.figure(figsize=(10, 6))
+        sns.histplot(df['Price Each'], kde=True, stat="density", color='#2196F3')
         x = np.linspace(df['Price Each'].min(), df['Price Each'].max(), 100)
-        fig3.add_scatter(x=x, y=norm.pdf(x, mu, std), mode='lines', name=f'Fit (μ={mu:.2f}, σ={std:.2f})', line=dict(color='red'))
-        img_byte_arr3 = BytesIO()
-        fig3.write_image(img_byte_arr3, format="png")
-        img_byte_arr3.seek(0)
+        plt.plot(x, norm.pdf(x, mu, std), 'r-', lw=2, label=f'Normal fit (μ={mu:.2f}, σ={std:.2f})')
+        plt.title('Sales Distribution with Normal Fit')
+        plt.xlabel('Sales Amount (INR)')
+        plt.ylabel('Density')
+        plt.legend()
+        sales_dist_file = os.path.join(BASE_DIR, f"sales_distribution_{uuid.uuid4().hex[:8]}.png")
+        plt.savefig(sales_dist_file)
+        plt.close()
 
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
-            for i, img in enumerate([img_byte_arr1, img_byte_arr2, img_byte_arr3], 1):
-                client.files_upload_v2(
-                    channel=dm_channel,
-                    file=img,
-                    filename=f"weekly_analysis_{i}_{uuid.uuid4().hex[:8]}.png",
-                    title=f"Weekly Analysis Graph {i}"
-                )
+            for i, file in enumerate([weekly_trend_file, overall_trend_file, sales_dist_file], 1):
+                with open(file, 'rb') as f:
+                    client.files_upload_v2(
+                        channel=dm_channel,
+                        file=f,
+                        filename=os.path.basename(file),
+                        title=f"Weekly Analysis Graph {i}"
+                    )
             return "Weekly sales analysis (3 graphs) sent to your DM!"
-        logging.error("Failed to get DM channel.")
         return "Failed to upload images."
     except Exception as e:
         logging.error(f"Analysis error: {e}")
         return f"Weekly analysis failed: {str(e)}"
 
-# Sales Insights and Recommendations (Fixed with explicit error handling)
+# Sales Insights and Recommendations (Using sales_data.csv and inventory.csv)
 def generate_sales_insights():
     df = load_sales_data()
     inventory_df = load_inventory()
@@ -552,11 +567,11 @@ def generate_sales_insights():
         total_sales = df["Price Each"].sum()
         avg_sale = df["Price Each"].mean()
         best_selling_product = df.groupby("Product")["Quantity Ordered"].sum().idxmax()
-        
+
         pytrends.build_payload(kw_list=[best_selling_product], timeframe='now 7-d')
         trends = pytrends.interest_over_time()
         trend_score = trends[best_selling_product].mean() / 100 if best_selling_product in trends else 0
-        
+
         recommendations = []
         if not inventory_df.empty:
             for _, product in inventory_df.iterrows():
@@ -564,14 +579,14 @@ def generate_sales_insights():
                 sales_score = product_sales / total_sales if total_sales > 0 else 0
                 stock_score = 1 - (product['Stock'] / 100)
                 weighted_score = 0.4 * sales_score + 0.3 * stock_score + 0.3 * trend_score
-                
+
                 if weighted_score < 0.3:
                     recommendations.append(f"Decrease price or promote {product['Product']} (Score: {weighted_score:.2f})")
                 elif weighted_score > 0.7:
                     recommendations.append(f"Increase price for {product['Product']} (Score: {weighted_score:.2f})")
                 if product['Stock'] < 10:
                     recommendations.append(f"Restock {product['Product']} (Current: {product['Stock']})")
-        
+
         insights = (
             f"📊 Sales Insights:\n"
             f"🔹 Total Sales: INR {total_sales:,.2f}\n"
