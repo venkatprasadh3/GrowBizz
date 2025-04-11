@@ -29,7 +29,7 @@ import plotly.express as px
 import datetime
 import seaborn as sns
 from googletrans import Translator
-import requests  # For downloading placeholder images
+import requests
 
 # Configuration and Constants
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -50,6 +50,7 @@ SALES_DATA_PATH = os.path.join(BASE_DIR, "sales_data.csv")
 INVENTORY_PATH = os.path.join(BASE_DIR, "inventory.csv")
 USERS_PATH = os.path.join(BASE_DIR, "users.csv")
 LOGO_PATH = os.path.join(BASE_DIR, "psg_logo_blue.png")
+DEFAULT_PROMO_IMG = os.path.join(BASE_DIR, "default_promo.png")  # Add a local fallback image
 
 user_states = {}
 client = WebClient(token=SLACK_BOT_TOKEN)
@@ -172,10 +173,14 @@ def load_sales_data():
     try:
         if os.path.exists(SALES_DATA_PATH):
             df = pd.read_csv(SALES_DATA_PATH)
+            # Explicitly convert 'Price Each' to float
+            df['Price Each'] = pd.to_numeric(df['Price Each'], errors='coerce')
+            # Handle both date formats
             df['Order Date'] = pd.to_datetime(df['Order Date'], format='%m/%d/%y %H:%M', errors='coerce').fillna(
                 pd.to_datetime(df['Order Date'], format='%m-%d-%Y %H:%M', errors='coerce')
             )
-            return df.dropna(subset=['Order Date'])
+            logging.info(f"Loaded sales data: {df.head().to_string()}")
+            return df.dropna(subset=['Order Date', 'Price Each'])
         else:
             df = pd.DataFrame(columns=["Order ID", "Product", "Quantity Ordered", "Price Each", "Order Date", "Purchase Address"])
             df.to_csv(SALES_DATA_PATH, index=False)
@@ -383,7 +388,7 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
         logging.error(f"Invoice error: {e}")
         return FALLBACK_RESPONSES["invoice"]
 
-# Promotion Generation (Enhanced with Placeholder Image)
+# Promotion Generation (With Local Fallback)
 def generate_promotion(prompt, user_id):
     try:
         # Parse prompt
@@ -394,24 +399,31 @@ def generate_promotion(prompt, user_id):
         shop_match = re.search(r'(?:for|at)\s+([\w\s]+)$', prompt, re.IGNORECASE)
         shop_name = shop_match.group(1) if shop_match else "Our Store"
 
-        # Download a placeholder image based on product
+        # Try fetching image from Unsplash, fall back to local default
         placeholder_urls = {
-            "shoe": "https://via.placeholder.com/200?text=Shoe",
-            "phone": "https://via.placeholder.com/200?text=Phone",
-            "headphone": "https://via.placeholder.com/200?text=Headphone",
-            "monitor": "https://via.placeholder.com/200?text=Monitor",
-            "cable": "https://via.placeholder.com/200?text=Cable"
+            "shoe": "https://images.unsplash.com/photo-1542291026-7eec264c27ff",
+            "phone": "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9",
+            "headphone": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e",
+            "monitor": "https://images.unsplash.com/photo-1593642532973-d31b6557fa68",
+            "cable": "https://images.unsplash.com/photo-1610056490484-256a73c68d65"
         }
-        img_url = placeholder_urls.get(product.lower(), "https://via.placeholder.com/200?text=Product")
-        response = requests.get(img_url)
-        product_img = Image.open(BytesIO(response.content)).resize((200, 200))
+        img_url = placeholder_urls.get(product.lower(), "https://images.unsplash.com/photo-1505740420928-5e560c06d30e")
+        try:
+            response = requests.get(img_url, timeout=5)
+            response.raise_for_status()
+            product_img = Image.open(BytesIO(response.content)).resize((200, 200))
+        except Exception as e:
+            logging.warning(f"Failed to fetch image from {img_url}: {e}")
+            if os.path.exists(DEFAULT_PROMO_IMG):
+                product_img = Image.open(DEFAULT_PROMO_IMG).resize((200, 200))
+            else:
+                product_img = Image.new('RGB', (200, 200), color='gray')  # Fallback if no local image
 
         # Create promotion image
         img = Image.new('RGB', (600, 400), color=(255, 215, 0))  # Gold background
         d = ImageDraw.Draw(img)
         d.rectangle([(10, 10), (590, 390)], outline="black", width=5)
 
-        # Load fonts
         try:
             title_font = ImageFont.truetype("arial.ttf", 50)
             text_font = ImageFont.truetype("arial.ttf", 30)
@@ -421,14 +433,9 @@ def generate_promotion(prompt, user_id):
             text_font = ImageFont.load_default()
             shop_font = ImageFont.load_default()
 
-        # Add discount text
         d.text((50, 50), discount.upper(), fill='red', font=title_font)
         d.rectangle([(45, 45), (45 + d.textlength(discount.upper(), title_font), 95)], fill=None, outline='red', width=3)
-
-        # Add product image
         img.paste(product_img, (350, 100))
-
-        # Add shop name
         shop_text = f"At {shop_name}"
         shop_x = (600 - d.textlength(shop_text, shop_font)) / 2
         d.text((shop_x, 300), shop_text, fill='blue', font=shop_font)
@@ -451,7 +458,7 @@ def generate_promotion(prompt, user_id):
         logging.error(f"Promotion error: {e}")
         return FALLBACK_RESPONSES["promotion"]
 
-# Chart Generation (Using sales_data.csv)
+# Chart Generation
 def generate_chart(user_id, query):
     df = load_sales_data()
     if df.empty:
@@ -499,7 +506,7 @@ def generate_chart(user_id, query):
         logging.error(f"Chart error: {e}")
         return f"Chart generation failed: {str(e)}"
 
-# Weekly Sales Analysis (Using Matplotlib and sales_data.csv)
+# Weekly Sales Analysis
 def generate_weekly_sales_analysis(user_id):
     df = load_sales_data()
     if df.empty:
@@ -556,7 +563,7 @@ def generate_weekly_sales_analysis(user_id):
         logging.error(f"Analysis error: {e}")
         return f"Weekly analysis failed: {str(e)}"
 
-# Sales Insights and Recommendations (Using sales_data.csv and inventory.csv)
+# Sales Insights and Recommendations
 def generate_sales_insights():
     df = load_sales_data()
     inventory_df = load_inventory()
