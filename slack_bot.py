@@ -69,7 +69,7 @@ FALLBACK_RESPONSES = {
     "insights_api_quota": "Sales insights unavailable due to API rate limits. Please wait and retry.",
     "insights_no_data": "Sales insights unavailable because no sales data was found.",
     "promotion": "Promotion image generation failed. Try again later.",
-    "promotion_no_image": "Couldn’t generate promotion image due to missing default image or network issues.",
+    "promotion_no_image": "Couldn’t generate promotion image due to missing default image.",
     "whatsapp": "Failed to send WhatsApp message. Please try again.",
     "invoice": "Sorry, invoice generation failed. Please try again.",
     "chart": "Chart generation failed. Please try again later.",
@@ -402,103 +402,39 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
         logging.error(f"Invoice error for {user_id}: {e}")
         return FALLBACK_RESPONSES["invoice"]
 
-# Promotion Generation (Fixed to Prevent Restart and Ensure Upload)
+# Promotion Generation (Simplified to Upload promotion_image.png)
 def generate_promotion(prompt, user_id):
     try:
-        # Parse prompt
-        discount_match = re.search(r'(\d+%?|free|buy \d+ get \d+)', prompt, re.IGNORECASE)
-        discount = discount_match.group(0) if discount_match else "Special Offer"
-        product_match = re.search(r'(shoe|phone|headphone|monitor|cable)', prompt, re.IGNORECASE)
-        product = product_match.group(0) if product_match else "Product"
-        shop_match = re.search(r'(?:shop|store)\s+named?\s+["\']?([\w\s]+)["\']?', prompt, re.IGNORECASE)
-        shop_name = shop_match.group(1) if shop_match else "Our Store"
+        if not os.path.exists(DEFAULT_PROMO_IMG):
+            logging.error(f"Promotion image not found at {DEFAULT_PROMO_IMG} for {user_id}")
+            return FALLBACK_RESPONSES["promotion_no_image"]
 
-        # Image source
-        placeholder_urls = {
-            "shoe": "https://images.unsplash.com/photo-1542291026-7eec264c27ff",
-            "phone": "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9",
-            "headphone": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e",
-            "monitor": "https://images.unsplash.com/photo-1593642532973-d31b6557fa68",
-            "cable": "https://images.unsplash.com/photo-1610056490484-256a73c68d65"
-        }
-        img_url = placeholder_urls.get(product.lower())
-        if img_url:
-            try:
-                response = requests.get(img_url, timeout=5)
-                response.raise_for_status()
-                product_img = Image.open(BytesIO(response.content)).resize((200, 200))
-                logging.info(f"Loaded Unsplash image for {product} for {user_id}.")
-            except Exception as e:
-                logging.warning(f"Unsplash fetch failed for {user_id}: {e}")
-                product_img = None
-        else:
-            product_img = None
-
-        if not product_img and os.path.exists(DEFAULT_PROMO_IMG):
-            try:
-                product_img = Image.open(DEFAULT_PROMO_IMG).resize((200, 200))
-                logging.info(f"Using default image {DEFAULT_PROMO_IMG} for {user_id}.")
-            except Exception as e:
-                logging.warning(f"Default image load failed for {user_id}: {e}")
-                product_img = None
-
-        if not product_img:
-            product_img = Image.new('RGB', (200, 200), color='gray')
-            logging.info(f"Using gray placeholder for {user_id}.")
-
-        # Create image
-        img = Image.new('RGB', (600, 400), color=(255, 215, 0))
-        d = ImageDraw.Draw(img)
-        try:
-            title_font = ImageFont.truetype("arial.ttf", 40)  # Reduced size
-            shop_font = ImageFont.truetype("arial.ttf", 30)
-        except:
-            logging.warning(f"Font load failed for {user_id}, using default.")
-            title_font = ImageFont.load_default()
-            shop_font = ImageFont.load_default()
-
-        d.text((50, 50), discount.upper(), fill='red', font=title_font)
-        img.paste(product_img, (350, 100))
-        shop_text = f"At {shop_name}"
-        shop_x = (600 - d.textlength(shop_text, shop_font)) / 2
-        d.text((shop_x, 300), shop_text, fill='blue', font=shop_font)
-
-        promo_file = f"promotion_{uuid.uuid4().hex[:8]}.png"
-        try:
-            img.save(promo_file, 'PNG')
-            logging.info(f"Promotion image saved as {promo_file} for {user_id}.")
-        except Exception as e:
-            logging.error(f"Image save failed for {user_id}: {e}")
-            return FALLBACK_RESPONSES["promotion"]
-
-        # Upload to DM
         dm_channel = get_dm_channel(user_id)
         if dm_channel:
             try:
-                with open(promo_file, 'rb') as f:
+                with open(DEFAULT_PROMO_IMG, 'rb') as f:
                     client.files_upload_v2(
                         channel=dm_channel,
                         file=f,
-                        filename=promo_file,
-                        title=f"Promotion: {prompt}"
+                        filename="promotion_image.png",
+                        title="Promotion Image"
                     )
-                logging.info(f"Promotion image uploaded to DM for {user_id}.")
-                os.remove(promo_file)  # Clean up
-                return f"Promotion image sent to your DM!\nText: {prompt}"
+                logging.info(f"Promotion image uploaded to DM for {user_id}")
+                return "Promotion image sent to your DM!"
             except SlackApiError as e:
                 logging.error(f"Slack upload failed for {user_id}: {e}")
                 return FALLBACK_RESPONSES["promotion"]
-        logging.warning(f"No DM channel for {user_id}.")
+        logging.warning(f"No DM channel for {user_id}")
         return FALLBACK_RESPONSES["promotion"]
     except Exception as e:
-        logging.error(f"Promotion generation crashed for {user_id}: {e}")
+        logging.error(f"Promotion generation failed for {user_id}: {e}")
         return FALLBACK_RESPONSES["promotion"]
 
-# Chart Generation (Fixed with Robust Fallback)
+# Chart Generation (Fixed to Prevent Restart and Use sales_data.csv)
 def generate_chart(user_id, query):
     df = load_sales_data()
     if df.empty:
-        logging.error(f"Chart failed for {user_id}: No sales data.")
+        logging.error(f"Chart failed for {user_id}: No sales data")
         return FALLBACK_RESPONSES["chart_no_data"]
 
     cache_key = f"{query}_{df.to_string()[:100]}"
@@ -541,7 +477,7 @@ def generate_chart(user_id, query):
         exec(code, globals(), local_vars)
         fig = local_vars.get("fig")
         if not fig:
-            logging.error(f"Chart execution failed for {user_id}: No figure generated.")
+            logging.error(f"Chart execution failed for {user_id}: No figure generated")
             return FALLBACK_RESPONSES["chart"]
 
         img_byte_arr = BytesIO()
@@ -557,12 +493,12 @@ def generate_chart(user_id, query):
                     filename=f"chart_{uuid.uuid4().hex[:8]}.png",
                     title="Sales Chart"
                 )
-                logging.info(f"Chart uploaded to DM for {user_id}.")
+                logging.info(f"Chart uploaded to DM for {user_id}")
                 return "Chart sent to your DM!"
             except SlackApiError as e:
                 logging.error(f"Chart upload failed for {user_id}: {e}")
                 return FALLBACK_RESPONSES["chart"]
-        logging.warning(f"No DM channel for {user_id}.")
+        logging.warning(f"No DM channel for {user_id}")
         return FALLBACK_RESPONSES["chart"]
     except Exception as e:
         logging.error(f"Chart rendering/upload failed for {user_id}: {e}")
@@ -710,7 +646,7 @@ def process_query(text, user_id, event_channel):
         elif "insights" in text or "sales insights" in text:
             return generate_sales_insights(user_id)
         elif "promotion:" in text or "generate promotion" in text or "promotion poster" in text:
-            prompt = text.replace("promotion:", "").replace("generate promotion", "").replace("promotion poster", "").strip()
+            prompt = text.replace("promotion:", "").replace("generate Wpromotion", "").replace("promotion poster", "").strip()
             return generate_promotion(prompt, user_id)
         elif "whatsapp" in text or "send whatsapp message" in text:
             message = text.replace("whatsapp", "").replace("send whatsapp message", "").strip() or "Hello from GrowBizz!"
