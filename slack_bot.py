@@ -50,7 +50,7 @@ SALES_DATA_PATH = os.path.join(BASE_DIR, "sales_data.csv")
 INVENTORY_PATH = os.path.join(BASE_DIR, "inventory.csv")
 USERS_PATH = os.path.join(BASE_DIR, "users.csv")
 LOGO_PATH = os.path.join(BASE_DIR, "psg_logo_blue.png")
-DEFAULT_PROMO_IMG = os.path.join(BASE_DIR, "default_promo.png")  # Add a local fallback image
+DEFAULT_PROMO_IMG = os.path.join(BASE_DIR, "promotion_image.png")
 
 user_states = {}
 client = WebClient(token=SLACK_BOT_TOKEN)
