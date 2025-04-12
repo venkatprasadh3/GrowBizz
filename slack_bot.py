@@ -32,9 +32,6 @@ from googletrans import Translator
 import requests
 import html2text
 
-# Suppress Pytrends FutureWarning
-pd.set_option('future.no_silent_downcasting', True)
-
 # Configuration and Constants
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -542,7 +539,8 @@ def generate_invoice(customer_id=None, product=None, user_id=None, event_channel
                         channel=event_channel,
                         file=f,
                         filename="invoice_A35432.pdf",
-                        title="Smart Shoes Invoice"
+                        title="Smart Shoes Invoice",
+                        initial_comment="Invoice for your recent purchase."
                     )
                 whatsapp_msg = f"Hey {customer['name']} 👋, your invoice A35432 is ready! Check it out."
                 whatsapp_response = send_whatsapp_media_message(user_id, whatsapp_msg, media_path=invoice_path)
@@ -627,31 +625,21 @@ def generate_promotion(prompt, user_id, event_channel):
                 ],
                 "text": "Promotion failed: no image."
             }
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        description = model.generate_content(f"Create a short description for a promotion poster based on: {prompt}").text.strip()
+        context = "Promotion poster for your shoe shop" if not prompt else f"Promotion poster for {prompt}"
         try:
             with open(DEFAULT_PROMO_IMG, 'rb') as f:
                 client.files_upload_v2(
                     channel=event_channel,
                     file=f,
                     filename="promotion_image.png",
-                    title="Promotion Image"
+                    title="Smart Shoes Promotion Poster",
+                    initial_comment=context
                 )
             logging.info(f"Promotion image uploaded to channel {event_channel} for {user_id}")
-            response = {
-                "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Promotion Generated 🖼️"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"{description}\n\nImage uploaded to this channel!"}
-                    }
-                ],
-                "text": f"Promotion poster generated: {description[:100]}..."
+            return {
+                "blocks": [],
+                "text": context
             }
-            return response
         except SlackApiError as e:
             logging.error(f"Slack upload failed for {user_id}: {e}")
             return {
@@ -701,58 +689,28 @@ def generate_chart(user_id, query, event_channel):
             ],
             "text": "Chart failed: no sales data."
         }
-    cache_key = f"{query}_{df.to_string()[:100]}"
-    if cache_key in chart_cache:
-        logging.info(f"Using cached chart code for {user_id}: {chart_cache[cache_key]}")
-        code = chart_cache[cache_key]
-    else:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"""
-        Generate Plotly Express code for: {query}. Use this data:
-        {df.to_string()}
-        Return just the code, use columns: 'Product', 'Quantity Ordered', 'Price Each', 'Order Date'.
-        """
-        retries = 5
-        for attempt in range(retries):
-            try:
-                response = model.generate_content(prompt)
-                code = response.text.strip()
-                chart_cache[cache_key] = code
-                logging.info(f"Generated Plotly code for {user_id}: {code}")
-                break
-            except exceptions.ResourceExhausted as e:
-                if attempt < retries - 1:
-                    wait_time = 30 * (2 ** attempt)
-                    logging.warning(f"Gemini API quota exceeded for {user_id}, retrying in {wait_time}s: {e}")
-                    time.sleep(wait_time)
-                else:
-                    logging.error(f"Gemini API quota exhausted for {user_id} after {retries} attempts: {e}")
-                    code = None
-            except Exception as e:
-                logging.error(f"Chart code generation failed for {user_id}: {e}")
-                code = None
-                break
-        if not code:
-            logging.info(f"Using fallback Matplotlib chart for {user_id}")
-            return generate_fallback_chart(df, user_id, event_channel)
-    try:
-        local_vars = {"df": df, "px": px}
-        exec(code, globals(), local_vars)
-        fig = local_vars.get("fig")
-        if not fig:
-            logging.error(f"Chart execution failed for {user_id}: No figure generated")
-            return generate_fallback_chart(df, user_id, event_channel)
-        img_byte_arr = BytesIO()
-        fig.write_image(img_byte_arr, format="png", engine="kaleido", width=800, height=600)
-        img_byte_arr.seek(0)
+    # Handle common chart types without Gemini
+    if "bar chart for the sales by product" in query.lower():
         try:
+            # Use Plotly for bar chart
+            fig = px.bar(
+                df.groupby('Product')['Price Each'].sum().reset_index(),
+                x='Product',
+                y='Price Each',
+                title='Sales by Product',
+                labels={'Price Each': 'Total Sales (₹)'}
+            )
+            img_byte_arr = BytesIO()
+            fig.write_image(img_byte_arr, format="png", engine="kaleido", width=800, height=600)
+            img_byte_arr.seek(0)
             client.files_upload_v2(
                 channel=event_channel,
                 file=img_byte_arr,
                 filename=f"chart_{uuid.uuid4().hex[:8]}.png",
-                title="Sales Chart"
+                title="Sales by Product Bar Chart",
+                initial_comment="Bar chart showing total sales by product."
             )
-            logging.info(f"Chart uploaded to channel {event_channel} for {user_id}")
+            logging.info(f"Bar chart uploaded to channel {event_channel} for {user_id}")
             return {
                 "blocks": [
                     {
@@ -761,39 +719,33 @@ def generate_chart(user_id, query, event_channel):
                     },
                     {
                         "type": "section",
-                        "text": {"type": "mrkdwn", "text": "Chart uploaded to this channel!"}
+                        "text": {"type": "mrkdwn", "text": "Bar chart uploaded to this channel!"}
                     }
                 ],
-                "text": "Chart uploaded."
+                "text": "Bar chart uploaded."
             }
-        except SlackApiError as e:
-            logging.error(f"Chart upload failed for {user_id}: {e}")
-            return {
-                "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Chart Generation 📊"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["chart"]}
-                    }
-                ],
-                "text": "Chart upload failed."
-            }
-    except Exception as e:
-        logging.error(f"Chart rendering failed for {user_id}: {e}")
-        return generate_fallback_chart(df, user_id, event_channel)
+        except Exception as e:
+            logging.error(f"Plotly bar chart failed for {user_id}: {e}")
+            return generate_fallback_chart(df, user_id, event_channel, chart_type="bar")
+    # Fallback to Matplotlib for other queries
+    return generate_fallback_chart(df, user_id, event_channel, chart_type="bar")
 
-def generate_fallback_chart(df, user_id, event_channel):
+def generate_fallback_chart(df, user_id, event_channel, chart_type="bar"):
     try:
         plt.figure(figsize=(10, 6))
         product_sales = df.groupby('Product')['Price Each'].sum()
-        product_sales.plot(kind='bar', color='skyblue')
-        plt.title('Sales by Product')
-        plt.xlabel('Product')
-        plt.ylabel('Total Sales (₹)')
-        plt.xticks(rotation=45, ha='right')
+        if chart_type == "bar":
+            product_sales.plot(kind='bar', color='skyblue')
+            plt.title('Sales by Product')
+            plt.xlabel('Product')
+            plt.ylabel('Total Sales (₹)')
+            plt.xticks(rotation=45, ha='right')
+        else:
+            plt.plot(product_sales.index, product_sales.values, marker='o', linestyle='-', color='skyblue')
+            plt.title('Sales Trend by Product')
+            plt.xlabel('Product')
+            plt.ylabel('Total Sales (₹)')
+            plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
         img_byte_arr = BytesIO()
         plt.savefig(img_byte_arr, format='png')
@@ -803,7 +755,8 @@ def generate_fallback_chart(df, user_id, event_channel):
             channel=event_channel,
             file=img_byte_arr,
             filename=f"fallback_chart_{uuid.uuid4().hex[:8]}.png",
-            title="Fallback Sales Chart"
+            title="Fallback Sales Chart",
+            initial_comment="Fallback chart for sales by product."
         )
         logging.info(f"Fallback chart uploaded to channel {event_channel} for {user_id}")
         return {
