@@ -255,16 +255,10 @@ def handle_customer_registration(user_id, text):
     if 'customer_id' in state:
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "User Already Registered 😊"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"You are already registered with Customer ID: `{state['customer_id']}`."}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Registration Status 📝"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "**User is already registered**\n*You are already registered* with Customer ID: `{state['customer_id']}`."}}
             ],
-            "text": "User already registered."
+            "text": "User is already registered."
         }
     if "register:" in text.lower():
         try:
@@ -290,18 +284,12 @@ def handle_customer_registration(user_id, text):
             new_user = pd.DataFrame([{**user_states[user_id], 'slack_id': user_id}])
             users_df = pd.concat([users_df, new_user], ignore_index=True)
             users_df.to_csv(USERS_PATH, index=False)
-            welcome_msg = f"Welcome to GrowBizz, {name}! Enjoy your shopping! 🛒\n📍 Address: {address}\n📞 Phone: {phone}"
+            welcome_msg = f"Welcome to GrowBizz, {name}!\nEnjoy your shopping! 🛒\n📍 Address: Mark Place,\n📞 Phone: +919876543210"
             whatsapp_response = send_whatsapp_message(user_id, welcome_msg)
             response = {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Registration Successful ✅"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"Customer ID: `{customer_id}`\n{whatsapp_response}"}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Registration Successful ✅"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"Customer ID: `{customer_id}`\n{whatsapp_response}"}}
                 ],
                 "text": f"Registered {name} with ID {customer_id}"
             }
@@ -311,27 +299,15 @@ def handle_customer_registration(user_id, text):
             logging.error(f"Registration error for {user_id}: {e}")
             return {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Registration Failed 🙁"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["register"]}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Registration Failed 🙁"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["register"]}}
                 ],
                 "text": "Registration failed."
             }
     return {
         "blocks": [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": "Registration Help 📝"}
-            },
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "Please use: `register: name, email, phone, language, address`"}
-            }
+            {"type": "header", "text": {"type": "plain_text", "text": "Registration Help 📝"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "Please use: `register: name, email, phone, language, address`"}}
         ],
         "text": "Registration help provided."
     }
@@ -341,28 +317,16 @@ def process_purchase(user_id, text):
     if user_id not in user_states or 'customer_id' not in user_states[user_id]:
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": "Please register first using: `register: name, email, phone, language, address` 📝"}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Please register first using: `register: name, email, phone, language, address` 📝"}}
             ],
             "text": "Purchase failed: not registered."
         }
     if "purchase:" not in text.lower():
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Purchase Help 🛍️"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": "Please use: `purchase: product, quantity`"}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Purchase Help 🛍️"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Please use: `purchase: product, quantity`"}}
             ],
             "text": "Purchase help provided."
         }
@@ -374,14 +338,8 @@ def process_purchase(user_id, text):
         if product not in inventory['Product'].values:
             return {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"Product '{product}' not found in inventory."}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"Product '{product}' not found in inventory."}}
                 ],
                 "text": f"Purchase failed: {product} not found."
             }
@@ -389,14 +347,8 @@ def process_purchase(user_id, text):
         if stock < quantity:
             return {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"Insufficient stock for '{product}'. Available: {stock} 📦"}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"Insufficient stock for '{product}'. Available: {stock} 📦"}}
                 ],
                 "text": f"Purchase failed: insufficient stock for {product}."
             }
@@ -409,14 +361,8 @@ def process_purchase(user_id, text):
         email_response = send_email(user_id, "Purchase Confirmation", purchase_msg, "invoice_A35432.pdf" if os.path.exists("invoice_A35432.pdf") else None)
         response = {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Purchase Confirmed 🛒"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"{purchase_msg}\n{invoice_msg['blocks'][1]['text']['text']}\n{whatsapp_response}\n{email_response}"}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Purchase Confirmed 🛒"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"{purchase_msg}\n{invoice_msg['blocks'][1]['text']['text']}\n{whatsapp_response}\n{email_response}"}}
             ],
             "text": f"Purchase confirmed: {quantity} x {product}"
         }
@@ -426,14 +372,8 @@ def process_purchase(user_id, text):
         logging.error(f"Purchase error for {user_id}: {e}")
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["purchase"]}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["purchase"]}}
             ],
             "text": "Purchase failed."
         }
@@ -444,165 +384,62 @@ def generate_invoice(customer_id=None, product=None, user_id=None, event_channel
         if not user_id:
             return {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Invoice Generation 📄"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": "User ID required for invoice generation. 🙁"}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Invoice Generation 📄"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "User ID required. 🙁"}}
                 ],
                 "text": "Invoice failed: missing user ID."
             }
         users_df = load_users()
-        customer = users_df[users_df['slack_id'] == user_id].iloc[0] if not users_df[users_df['slack_id'] == user_id].empty else None
-        if not customer:
+        if users_df[users_df['slack_id'] == user_id].empty:
             return {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Invoice Generation 📄"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": "Please register first to generate an invoice. 🙁"}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Invoice Generation 📄"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Please register first. 🙁"}}
                 ],
                 "text": "Invoice failed: user not registered."
             }
-        # Default product for standalone invoice
+        customer = users_df[users_df['slack_id'] == user_id].iloc[0]
         product = product or {'product_name': 'Sample Product', 'price': 1000.00, 'quantity': 1}
         html_content = f"""
         <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Shoe Shop Invoice</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f9f9f9; color: #333; }}
-                .container {{ max-width: 800px; margin: 20px auto; padding: 20px; background-color: #fff; border-radius: 10px; }}
-                header {{ text-align: center; margin-bottom: 20px; }}
-                header img {{ width: 100px; }}
-                header h1 {{ color: #2c3e50; }}
-                table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
-                th, td {{ padding: 10px; border: 1px solid #ddd; text-align: left; }}
-                th {{ background-color: #f0f0f0; }}
-                .total {{ text-align: right; font-weight: bold; }}
-            </style>
-        </head>
+        <html>
+        <head><title>Invoice</title></head>
         <body>
-            <div class="container">
-                <header>
-                    <img src="{LOGO_PATH}" alt="Smart Shoes Logo">
-                    <h1>Smart Shoes</h1>
-                    <p>15, MG Road, Bengaluru, Karnataka, India</p>
-                </header>
-                <p>Invoice Number: A35432</p>
-                <p>Date: April 04, 2019</p>
-                <p>Bill To: {customer['name']}, {customer['address']}</p>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Qty</th>
-                            <th>Product</th>
-                            <th>Unit Price</th>
-                            <th>Total</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td>{product['quantity']}</td>
-                            <td>{product['product_name']}</td>
-                            <td>₹{product['price'] / product['quantity']:,.2f}</td>
-                            <td>₹{product['price']:,.2f}</td>
-                        </tr>
-                    </tbody>
-                </table>
-                <div class="total">
-                    <p>Subtotal: ₹{product['price']:,.2f}</p>
-                    <p>Tax (12%): ₹{product['price'] * 0.12:,.2f}</p>
-                    <p>Total: ₹{product['price'] * 1.12:,.2f}</p>
-                </div>
-            </div>
+            <h1>Smart Shoes Invoice</h1>
+            <p>Invoice Number: A35432</p>
+            <p>Date: {datetime.datetime.now().strftime('%Y-%m-%d')}</p>
+            <p>Bill To: {customer['name']}</p>
+            <table border="1">
+                <tr><th>Qty</th><th>Product</th><th>Price</th></tr>
+                <tr><td>{product['quantity']}</td><td>{product['product_name']}</td><td>₹{product['price']:,.2f}</td></tr>
+            </table>
+            <p>Total: ₹{product['price'] * 1.12:,.2f}</p>
         </body>
         </html>
         """
-        invoice_path = os.path.join(BASE_DIR, "invoice_A35432.pdf")
+        invoice_path = "/tmp/invoice_A35432.pdf"
         HTML(string=html_content).write_pdf(invoice_path)
-        logging.info(f"Invoice PDF generated at {invoice_path} for {user_id}")
         if event_channel:
-            try:
-                with open(invoice_path, 'rb') as f:
-                    client.files_upload_v2(
-                        channel=event_channel,
-                        file=f,
-                        filename="invoice_A35432.pdf",
-                        title="Smart Shoes Invoice",
-                        initial_comment="Invoice for your recent purchase."
-                    )
-                whatsapp_msg = f"Hey {customer['name']} 👋, your invoice A35432 is ready! Check it out."
-                whatsapp_response = send_whatsapp_media_message(user_id, whatsapp_msg, media_path=invoice_path)
-                response = {
-                    "blocks": [
-                        {
-                            "type": "header",
-                            "text": {"type": "plain_text", "text": "Invoice Generated 📄"}
-                        },
-                        {
-                            "type": "section",
-                            "text": {"type": "mrkdwn", "text": f"Invoice uploaded to this channel as `invoice_A35432.pdf`!\n{whatsapp_response}"}
-                        }
-                    ],
-                    "text": "Invoice A35432 generated and uploaded."
-                }
-                logging.info(f"Invoice uploaded for {user_id}: {response}")
-                return response
-            except SlackApiError as e:
-                logging.error(f"Invoice upload failed for {user_id}: {e}")
-                return {
-                    "blocks": [
-                        {
-                            "type": "header",
-                            "text": {"type": "plain_text", "text": "Invoice Generation 📄"}
-                        },
-                        {
-                            "type": "section",
-                            "text": {"type": "mrkdwn", "text": f"Invoice generated at {invoice_path} but upload failed. 🙁\n{whatsapp_response}"}
-                        }
-                    ],
-                    "text": "Invoice generated but upload failed."
-                }
-        else:
-            whatsapp_msg = f"Hey {customer['name']} 👋, your invoice A35432 is ready!"
-            whatsapp_response = send_whatsapp_message(user_id, whatsapp_msg)
-            response = {
-                "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Invoice Generated 📄"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"Invoice generated at {invoice_path}.\n{whatsapp_response}"}
-                    }
-                ],
-                "text": "Invoice A35432 generated."
-            }
-            return response
+            with open(invoice_path, 'rb') as f:
+                client.files_upload_v2(
+                    channel=event_channel,
+                    file=f,
+                    filename="invoice_A35432.pdf",
+                    title="Invoice"
+                )
+        return {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": "Invoice Generated 📄"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Invoice uploaded to this channel!"}}
+            ],
+            "text": "Invoice generated."
+        }
     except Exception as e:
         logging.error(f"Invoice error for {user_id}: {e}")
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Invoice Generation 📄"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["invoice"]}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Invoice Generation 📄"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Invoice generation failed. 🙁"}}
             ],
             "text": "Invoice generation failed."
         }
@@ -614,19 +451,13 @@ def generate_promotion(prompt, user_id, event_channel):
             logging.error(f"Promotion image not found at {DEFAULT_PROMO_IMG} for {user_id}")
             return {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["promotion_no_image"]}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["promotion_no_image"]}}
                 ],
                 "text": "Promotion failed: no image."
             }
         context = "Promotion poster for your shoe shop" if not prompt else f"Promotion poster for {prompt}"
-        try:
+        with threading.Lock():
             with open(DEFAULT_PROMO_IMG, 'rb') as f:
                 client.files_upload_v2(
                     channel=event_channel,
@@ -635,38 +466,17 @@ def generate_promotion(prompt, user_id, event_channel):
                     title="Smart Shoes Promotion Poster",
                     initial_comment=context
                 )
-            logging.info(f"Promotion image uploaded to channel {event_channel} for {user_id}")
-            return {
-                "blocks": [],
-                "text": context
-            }
-        except SlackApiError as e:
-            logging.error(f"Slack upload failed for {user_id}: {e}")
-            return {
-                "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["promotion"]}
-                    }
-                ],
-                "text": "Promotion upload failed."
-            }
+        logging.info(f"Promotion image uploaded to channel {event_channel} for {user_id}")
+        return {
+            "blocks": [],
+            "text": context
+        }
     except Exception as e:
         logging.error(f"Promotion generation failed for {user_id}: {e}")
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["promotion"]}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["promotion"]}}
             ],
             "text": "Promotion generation failed."
         }
@@ -678,21 +488,13 @@ def generate_chart(user_id, query, event_channel):
         logging.error(f"Chart failed for {user_id}: No sales data")
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Chart Generation 📊"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["chart_no_data"]}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Chart Generation 📊"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["chart_no_data"]}}
             ],
             "text": "Chart failed: no sales data."
         }
-    # Handle common chart types without Gemini
     if "bar chart for the sales by product" in query.lower():
         try:
-            # Use Plotly for bar chart
             fig = px.bar(
                 df.groupby('Product')['Price Each'].sum().reset_index(),
                 x='Product',
@@ -703,31 +505,25 @@ def generate_chart(user_id, query, event_channel):
             img_byte_arr = BytesIO()
             fig.write_image(img_byte_arr, format="png", engine="kaleido", width=800, height=600)
             img_byte_arr.seek(0)
-            client.files_upload_v2(
-                channel=event_channel,
-                file=img_byte_arr,
-                filename=f"chart_{uuid.uuid4().hex[:8]}.png",
-                title="Sales by Product Bar Chart",
-                initial_comment="Bar chart showing total sales by product."
-            )
+            with threading.Lock():
+                client.files_upload_v2(
+                    channel=event_channel,
+                    file=img_byte_arr,
+                    filename=f"chart_{uuid.uuid4().hex[:8]}.png",
+                    title="Sales by Product Bar Chart",
+                    initial_comment="Bar chart showing total sales by product."
+                )
             logging.info(f"Bar chart uploaded to channel {event_channel} for {user_id}")
             return {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Chart Generated 📊"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": "Bar chart uploaded to this channel!"}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Chart Generated 📊"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Bar chart uploaded to this channel!"}}
                 ],
                 "text": "Bar chart uploaded."
             }
         except Exception as e:
             logging.error(f"Plotly bar chart failed for {user_id}: {e}")
             return generate_fallback_chart(df, user_id, event_channel, chart_type="bar")
-    # Fallback to Matplotlib for other queries
     return generate_fallback_chart(df, user_id, event_channel, chart_type="bar")
 
 def generate_fallback_chart(df, user_id, event_channel, chart_type="bar"):
@@ -751,24 +547,19 @@ def generate_fallback_chart(df, user_id, event_channel, chart_type="bar"):
         plt.savefig(img_byte_arr, format='png')
         plt.close()
         img_byte_arr.seek(0)
-        client.files_upload_v2(
-            channel=event_channel,
-            file=img_byte_arr,
-            filename=f"fallback_chart_{uuid.uuid4().hex[:8]}.png",
-            title="Fallback Sales Chart",
-            initial_comment="Fallback chart for sales by product."
-        )
+        with threading.Lock():
+            client.files_upload_v2(
+                channel=event_channel,
+                file=img_byte_arr,
+                filename=f"fallback_chart_{uuid.uuid4().hex[:8]}.png",
+                title="Fallback Sales Chart",
+                initial_comment="Fallback chart for sales by product."
+            )
         logging.info(f"Fallback chart uploaded to channel {event_channel} for {user_id}")
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Chart Generated 📊"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": "Chart uploaded to this channel (using fallback method)!"}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Chart Generated 📊"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Chart uploaded to this channel (using fallback method)!"}}
             ],
             "text": "Fallback chart uploaded."
         }
@@ -776,14 +567,8 @@ def generate_fallback_chart(df, user_id, event_channel, chart_type="bar"):
         logging.error(f"Fallback chart failed for {user_id}: {e}")
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Chart Generation 📊"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["chart"]}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Chart Generation 📊"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["chart"]}}
             ],
             "text": "Chart generation failed."
         }
@@ -795,14 +580,8 @@ def generate_weekly_sales_analysis(user_id, event_channel):
         logging.warning(f"Weekly analysis failed for {user_id}: No sales data.")
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["weekly analysis"]}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["weekly analysis"]}}
             ],
             "text": "Weekly analysis failed: no sales data."
         }
@@ -812,7 +591,6 @@ def generate_weekly_sales_analysis(user_id, event_channel):
         avg_weekly_sales = weekly_sales.mean()
         best_selling_product = df.groupby('Product')['Quantity Ordered'].sum().idxmax()
 
-        # Plot 1: Weekly Sales Trend
         plt.figure(figsize=(12, 6))
         plt.plot(weekly_sales.index, weekly_sales.values, marker='o', linestyle='-', color='#4CAF50')
         plt.title('Weekly Sales Trend', fontsize=14, fontweight='bold')
@@ -823,7 +601,6 @@ def generate_weekly_sales_analysis(user_id, event_channel):
         plt.savefig(weekly_trend_file)
         plt.close()
 
-        # Plot 2: Overall Sales Trend
         plt.figure(figsize=(12, 6))
         plt.plot(df['Order Date'], df['Price Each'].cumsum(), color='#2196F3')
         plt.title('Overall Sales Trend', fontsize=14, fontweight='bold')
@@ -834,7 +611,6 @@ def generate_weekly_sales_analysis(user_id, event_channel):
         plt.savefig(overall_trend_file)
         plt.close()
 
-        # Plot 3: Sales Distribution
         mu, std = norm.fit(df['Price Each'].dropna())
         plt.figure(figsize=(10, 6))
         sns.histplot(df['Price Each'], kde=True, stat="density", color='#2196F3')
@@ -869,18 +645,9 @@ def generate_weekly_sales_analysis(user_id, event_channel):
 
         response = {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": insights}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": "Graphs uploaded to this channel! 📊"}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": insights}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Graphs uploaded to this channel! 📊"}}
             ],
             "text": f"Weekly sales analysis: Total ₹{total_sales:,.2f}, Best Product: {best_selling_product}"
         }
@@ -890,14 +657,8 @@ def generate_weekly_sales_analysis(user_id, event_channel):
         logging.error(f"Weekly analysis error for {user_id}: {e}")
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["weekly analysis"]}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["weekly analysis"]}}
             ],
             "text": "Weekly analysis failed."
         }
@@ -910,14 +671,8 @@ def generate_sales_insights(user_id=None):
         logging.warning(f"Insights failed for {user_id}: No sales data.")
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Sales Insights for April 2019 📊"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["insights_no_data"]}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Sales Insights for April 2019 📊"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["insights_no_data"]}}
             ],
             "text": "Sales insights failed: no data."
         }
@@ -997,25 +752,15 @@ def generate_sales_insights(user_id=None):
         else:
             recommendations_text += "*Recommendations* 📋\nNo specific recommendations available. 🙁"
 
-        # Truncate to avoid Slack block limit
         if len(recommendations_text) > 2900:
             recommendations_text = recommendations_text[:2900] + "... (truncated)"
         logging.info(f"Insights for {user_id}: {insights}\nRecommendations length: {len(recommendations_text)}")
 
         response = {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": f"Sales Insights for {month_text} 📊"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": insights}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": recommendations_text}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": f"Sales Insights for {month_text} 📊"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": insights}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": recommendations_text}}
             ],
             "text": f"Sales insights for {month_text}: Total ₹{total_sales:,.2f}"
         }
@@ -1024,14 +769,8 @@ def generate_sales_insights(user_id=None):
         logging.error(f"Insights error for {user_id}: {e}")
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Sales Insights for April 2019 📊"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["insights"]}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Sales Insights for April 2019 📊"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["insights"]}}
             ],
             "text": "Sales insights failed."
         }
@@ -1045,14 +784,8 @@ def process_audio_query(text, user_id):
             if not os.path.exists(audio_path):
                 return {
                     "blocks": [
-                        {
-                            "type": "header",
-                            "text": {"type": "plain_text", "text": "Call Summary 🎙️"}
-                        },
-                        {
-                            "type": "section",
-                            "text": {"type": "mrkdwn", "text": "Audio file not found. Please upload a valid file. 🙁"}
-                        }
+                        {"type": "header", "text": {"type": "plain_text", "text": "Call Summary 🎙️"}},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "Audio file not found. Please upload a valid file. 🙁"}}
                     ],
                     "text": "Call summary failed: no audio file."
                 }
@@ -1066,14 +799,8 @@ def process_audio_query(text, user_id):
             response = model.generate_content(contents)
             return {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Call Summary 🎙️"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": response.text.strip()}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Call Summary 🎙️"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": response.text.strip()}}
                 ],
                 "text": "Call summarized."
             }
@@ -1084,14 +811,8 @@ def process_audio_query(text, user_id):
             if not os.path.exists(audio_path):
                 return {
                     "blocks": [
-                        {
-                            "type": "header",
-                            "text": {"type": "plain_text", "text": "Bengali Voice Message 🎙️"}
-                        },
-                        {
-                            "type": "section",
-                            "text": {"type": "mrkdwn", "text": "Audio file not found. Please upload a valid file. 🙁"}
-                        }
+                        {"type": "header", "text": {"type": "plain_text", "text": "Bengali Voice Message 🎙️"}},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "Audio file not found. Please upload a valid file. 🙁"}}
                     ],
                     "text": "Bengali voice failed: no audio file."
                 }
@@ -1105,14 +826,8 @@ def process_audio_query(text, user_id):
             response = model.generate_content(contents)
             return {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Bengali Voice Message 🎙️"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": response.text.strip()}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Bengali Voice Message 🎙️"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": response.text.strip()}}
                 ],
                 "text": "Bengali voice processed."
             }
@@ -1121,14 +836,8 @@ def process_audio_query(text, user_id):
             if not os.path.exists(audio_path):
                 return {
                     "blocks": [
-                        {
-                            "type": "header",
-                            "text": {"type": "plain_text", "text": "Audio Processing 🎙️"}
-                        },
-                        {
-                            "type": "section",
-                            "text": {"type": "mrkdwn", "text": "Audio file not found. Please upload a valid file. 🙁"}
-                        }
+                        {"type": "header", "text": {"type": "plain_text", "text": "Audio Processing 🎙️"}},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "Audio file not found. Please upload a valid file. 🙁"}}
                     ],
                     "text": "Audio processing failed: no file."
                 }
@@ -1142,14 +851,8 @@ def process_audio_query(text, user_id):
             response = model.generate_content(contents)
             return {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Audio Processing 🎙️"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": response.text.strip()}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Audio Processing 🎙️"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": response.text.strip()}}
                 ],
                 "text": "Audio processed."
             }
@@ -1157,20 +860,14 @@ def process_audio_query(text, user_id):
         logging.error(f"Audio processing error for {user_id}: {e}")
         return {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Audio Processing 🎙️"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["audio"]}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Audio Processing 🎙️"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["audio"]}}
             ],
             "text": "Audio processing failed."
         }
 
 # Query Processing
-def process_query(text, user_id, event_channel):
+def process_query(text, user_id, event_channel, event_ts):
     text = text.lower().strip()
     if user_id not in user_states:
         user_states[user_id] = {'last_message': '', 'context': 'idle', 'last_response_time': 0}
@@ -1179,14 +876,13 @@ def process_query(text, user_id, event_channel):
     logging.info(f"Processing query: '{text}' from {user_id} in {event_channel}")
 
     # Prevent duplicate responses
-    cache_key = f"{user_id}_{text}_{event_channel}"
+    cache_key = f"{user_id}_{text}_{event_channel}_{event_ts}"
     current_time = time.time()
-    if cache_key in response_cache and (current_time - response_cache[cache_key]['time'] < 5):
+    if cache_key in response_cache and (current_time - response_cache[cache_key]['time'] < 10):
         logging.info(f"Skipping duplicate query: '{text}' from {user_id}")
         return response_cache[cache_key]['response']
 
     try:
-        # Normalize query
         if "weekly sales" in text:
             text = "weekly analysis"
         if "register" in text:
@@ -1205,14 +901,8 @@ def process_query(text, user_id, event_channel):
             whatsapp_response = send_whatsapp_message(user_id, message)
             response = {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "WhatsApp Message 📱"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": whatsapp_response}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "WhatsApp Message 📱"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": whatsapp_response}}
                 ],
                 "text": whatsapp_response
             }
@@ -1230,14 +920,8 @@ def process_query(text, user_id, event_channel):
                     gen_response = model.generate_content(f"Respond to this user query: {text}")
                     response = {
                         "blocks": [
-                            {
-                                "type": "header",
-                                "text": {"type": "plain_text", "text": "Response 🤔"}
-                            },
-                            {
-                                "type": "section",
-                                "text": {"type": "mrkdwn", "text": gen_response.text.strip()}
-                            }
+                            {"type": "header", "text": {"type": "plain_text", "text": "Response 🤔"}},
+                            {"type": "section", "text": {"type": "mrkdwn", "text": gen_response.text.strip()}}
                         ],
                         "text": gen_response.text.strip()[:100] + "..."
                     }
@@ -1251,14 +935,8 @@ def process_query(text, user_id, event_channel):
                         logging.error(f"Default query failed for {user_id} due to API quota: {e}")
                         response = {
                             "blocks": [
-                                {
-                                    "type": "header",
-                                    "text": {"type": "plain_text", "text": "Error 🙁"}
-                                },
-                                {
-                                    "type": "section",
-                                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}
-                                }
+                                {"type": "header", "text": {"type": "plain_text", "text": "Error 🙁"}},
+                                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}}
                             ],
                             "text": "Query failed due to API limits."
                         }
@@ -1266,14 +944,8 @@ def process_query(text, user_id, event_channel):
                     logging.error(f"Default query error for {user_id}: {e}")
                     response = {
                         "blocks": [
-                            {
-                                "type": "header",
-                                "text": {"type": "plain_text", "text": "Error 🙁"}
-                            },
-                            {
-                                "type": "section",
-                                "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}
-                            }
+                            {"type": "header", "text": {"type": "plain_text", "text": "Error 🙁"}},
+                            {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}}
                         ],
                         "text": "Query failed."
                     }
@@ -1294,14 +966,8 @@ def process_query(text, user_id, event_channel):
             logging.error(f"Slack post failed for {user_id}: {e}")
             response = {
                 "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Error 🙁"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": "Failed to post response. Please try again. 🙁"}
-                    }
+                    {"type": "header", "text": {"type": "plain_text", "text": "Error 🙁"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Failed to post response. Please try again. 🙁"}}
                 ],
                 "text": "Slack post failed."
             }
@@ -1310,14 +976,8 @@ def process_query(text, user_id, event_channel):
         logging.error(f"Query processing error for {user_id}: {e}")
         response = {
             "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": "Error 🙁"}
-                },
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}
-                }
+                {"type": "header", "text": {"type": "plain_text", "text": "Error 🙁"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}}
             ],
             "text": "Query processing failed."
         }
@@ -1353,7 +1013,7 @@ async def api_query(request: Request):
     data = await request.json()
     text = data.get("text", "")
     user_id = data.get("user_id", "api_user")
-    response = process_query(text, user_id, "api_channel")
+    response = process_query(text, user_id, "api_channel", "api_ts")
     return JSONResponse({"response": response["blocks"]})
 
 # HTTP Server for Render
@@ -1380,30 +1040,27 @@ if __name__ == "__main__":
 
     @slack_app.message(".*")
     def handle_message(event, say):
-        event_id = f"{event['event_ts']}_{event['channel']}"
+        event_id = f"{event['event_ts']}_{event['channel']}_{event['user']}"
         if event_id in processed_events:
             logging.info(f"Skipping duplicate event {event_id}")
             return
         processed_events.add(event_id)
+        if len(processed_events) > 10000:
+            processed_events.clear()
         user_id = event['user']
         text = event['text']
         event_channel = event['channel']
+        event_ts = event['event_ts']
         try:
-            response = process_query(text, user_id, event_channel)
+            response = process_query(text, user_id, event_channel, event_ts)
         except SlackApiError as e:
             if e.response["error"] == "not_in_channel":
                 try:
                     client.chat_postMessage(
                         channel=user_id,
                         blocks=[
-                            {
-                                "type": "header",
-                                "text": {"type": "plain_text", "text": "Channel Issue 🚪"}
-                            },
-                            {
-                                "type": "section",
-                                "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["not_in_channel"]}
-                            }
+                            {"type": "header", "text": {"type": "plain_text", "text": "Channel Issue 🚪"}},
+                            {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["not_in_channel"]}}
                         ],
                         text=FALLBACK_RESPONSES["not_in_channel"]
                     )
