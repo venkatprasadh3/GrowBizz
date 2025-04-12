@@ -3,11 +3,9 @@ slack-sdk
 matplotlib
 pillow
 twilio
-google-generativeai
 fpdf
 numpy
 scipy
-pytrends
 fastapi
 uvicorn
 plotly
@@ -15,4 +13,8 @@ seaborn
 googletrans==3.1.0a0
 slack-bolt
 kaleido
+google-generativeai
+pytrends
 requests
+weasyprint
+html2text
