@@ -18,3 +18,4 @@ pytrends
 requests
 weasyprint
 html2text
+urllib3<2.0
