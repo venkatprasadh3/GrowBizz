@@ -327,7 +327,7 @@ def handle_customer_registration(user_id, text):
         "blocks": [
             {
                 "type": "header",
-            "text": {"type": "plain_text", "text": "Registration Help 📝"}
+                "text": {"type": "plain_text", "text": "Registration Help 📝"}
             },
             {
                 "type": "section",
@@ -440,9 +440,9 @@ def process_purchase(user_id, text):
         }
 
 # Invoice Generation
-def generate_invoice(customer_id=None, product=None, user_id=None):
+def generate_invoice(customer_id=None, product=None, user_id=None, event_channel=None):
     try:
-        if not user_id:
+        if not user_id or not event_channel:
             return {
                 "blocks": [
                     {
@@ -451,10 +451,10 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
                     },
                     {
                         "type": "section",
-                        "text": {"type": "mrkdwn", "text": "User ID required for invoice generation. 🙁"}
+                        "text": {"type": "mrkdwn", "text": "User ID or channel required for invoice generation. 🙁"}
                     }
                 ],
-                "text": "Invoice failed: no user ID."
+                "text": "Invoice failed: missing user ID or channel."
             }
         users_df = load_users()
         customer = users_df[users_df['slack_id'] == user_id].iloc[0] if user_id in users_df['slack_id'].values else None
@@ -568,7 +568,7 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
                     },
                     {
                         "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"Invoice generated at {invoice_path} but not uploaded. 🙁\n{whatsapp_response}"}
+                        "text": {"type": "mrkdwn", "text": f"Invoice generated at {invoice_path} but upload failed. 🙁\n{whatsapp_response}"}
                     }
                 ],
                 "text": "Invoice generated but upload failed."
@@ -664,7 +664,7 @@ def generate_promotion(prompt, user_id, event_channel):
         }
 
 # Chart Generation
-def generate_chart(user_id, query):
+def generate_chart(user_id, query, event_channel):
     df = load_sales_data()
     if df.empty:
         logging.error(f"Chart failed for {user_id}: No sales data")
@@ -1087,7 +1087,7 @@ def process_audio_query(text, user_id):
                     "blocks": [
                         {
                             "type": "header",
-                        "text": {"type": "plain_text", "text": "Bengali Voice Message 🎙️"}
+                            "text": {"type": "plain_text", "text": "Bengali Voice Message 🎙️"}
                         },
                         {
                             "type": "section",
@@ -1172,7 +1172,6 @@ def process_audio_query(text, user_id):
 
 # Query Processing
 def process_query(text, user_id, event_channel):
-    global event_channel
     text = text.lower().strip()
     if user_id not in user_states:
         user_states[user_id] = {'last_message': '', 'context': 'idle'}
@@ -1211,9 +1210,9 @@ def process_query(text, user_id, event_channel):
                 "text": whatsapp_response
             }
         elif "invoice" in text or "generate invoice" in text:
-            response = generate_invoice(None, None, user_id)
+            response = generate_invoice(None, None, user_id, event_channel)
         elif "chart" in text:
-            response = generate_chart(user_id, text)
+            response = generate_chart(user_id, text, event_channel)
         elif "audio:" in text or "summarize call" in text or "bengali voice" in text:
             response = process_audio_query(text, user_id)
         else:
@@ -1267,10 +1266,10 @@ def process_query(text, user_id, event_channel):
                             {
                                 "type": "section",
                                 "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}
-                            }
-                        ],
-                        "text": "Query failed."
-                    }
+                                }
+                            ],
+                            "text": "Query failed."
+                        }
         # Post response to Slack
         try:
             client.chat_postMessage(
@@ -1376,7 +1375,6 @@ if __name__ == "__main__":
         processed_events.add(event_id)
         user_id = event['user']
         text = event['text']
-        global event_channel
         event_channel = event['channel']
         response = process_query(text, user_id, event_channel)
         try:
