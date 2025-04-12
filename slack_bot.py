@@ -78,7 +78,7 @@ FALLBACK_RESPONSES = {
     "chart_api_quota": "Chart generation failed due to API rate limits. Using default chart. 📉",
     "chart_no_data": "Chart generation failed because no sales data was found. 📊",
     "chart_invalid_query": "Chart generation failed due to an invalid query. Please specify a valid chart type. ❓",
-    "default": "Oops! I didn’t understand that. Try: register, purchase, weekly analysis, insights, promotion, whatsapp, invoice, chart, or ask me anything! 🤔",
+    "default": "Oops! I didn’t understand that. Try: register, purchase, weekly analysis, insights, promotion, whatsapp, invoice, chart, summarize call, bengali voice, or ask me anything! 🤔",
     "not_in_channel": "I can't respond here. Please invite me to this channel with `/invite @GrowBizz` or send me a DM! 🚪",
     "audio": "Audio processing failed. Please try again later. 🎙️"
 }
@@ -88,14 +88,6 @@ trend_cache = {}
 chart_cache = {}
 
 # Helper Functions
-def get_dm_channel(user_id):
-    try:
-        response = client.conversations_open(users=user_id)
-        return response['channel']['id']
-    except SlackApiError as e:
-        logging.error(f"Failed to open DM channel for {user_id}: {e}")
-        return None
-
 def get_user_language(user_id):
     users_df = load_users()
     user = users_df[users_df['slack_id'] == user_id].iloc[0] if user_id in users_df['slack_id'].values else None
@@ -122,15 +114,20 @@ def send_whatsapp_message(user_id, message):
     lang = user_states[user_id].get('language', DEFAULT_LANGUAGE)
     translated_msg = translate_message(message, lang)
     try:
-        twilio_client.messages.create(
+        response = twilio_client.messages.create(
             body=translated_msg,
             from_=f"whatsapp:{TWILIO_PHONE_NUMBER}",
             to=f"whatsapp:{phone}"
         )
-        return f"WhatsApp message sent to {phone}! 📱"
+        logging.info(f"WhatsApp message SID: {response.sid}, Status: {response.status}")
+        if response.status in ['queued', 'sent', 'delivered']:
+            return f"WhatsApp message sent to {phone}! 📱"
+        else:
+            logging.warning(f"WhatsApp message to {phone} failed with status: {response.status}")
+            return "WhatsApp message queued but may not have been delivered. Please check the number. 📱"
     except Exception as e:
         logging.error(f"WhatsApp error for {user_id}: {e}")
-        return FALLBACK_RESPONSES["whatsapp"]
+        return f"Failed to send WhatsApp message: {str(e)}. 🙁"
 
 def send_whatsapp_media_message(user_id, message, media_url=None, media_path=None):
     if not twilio_client:
@@ -144,14 +141,14 @@ def send_whatsapp_media_message(user_id, message, media_url=None, media_path=Non
     translated_msg = translate_message(message, lang)
     try:
         if media_path and os.path.exists(media_path):
-            # For local testing, media_url is required by Twilio; placeholder used
             media_url = media_url or "https://via.placeholder.com/600x400"  # Replace with actual URL in production
-        twilio_client.messages.create(
+        response = twilio_client.messages.create(
             body=translated_msg,
             from_=f"whatsapp:{TWILIO_PHONE_NUMBER}",
             to=f"whatsapp:{phone}",
             media_url=[media_url] if media_url else None
         )
+        logging.info(f"WhatsApp media message SID: {response.sid}, Status: {response.status}")
         return f"WhatsApp message sent to {phone}! 📱"
     except Exception as e:
         logging.error(f"WhatsApp media message error for {user_id}: {e}")
@@ -183,22 +180,6 @@ def send_email(user_id, subject, body, attachment=None):
     except Exception as e:
         logging.error(f"Email error for {user_id}: {e}")
         return "Failed to send email. 🙁"
-
-# Audio Processing
-def process_audio(audio_file_path, prompt, user_id):
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        with open(audio_file_path, 'rb') as audio_file:
-            audio_data = audio_file.read()
-        contents = [
-            prompt,
-            {"mime_type": "audio/mp3", "data": audio_data}
-        ]
-        response = model.generate_content(contents)
-        return response.text.strip()
-    except Exception as e:
-        logging.error(f"Audio processing error for {user_id}: {e}")
-        return FALLBACK_RESPONSES["audio"]
 
 # Data Management
 def load_inventory():
@@ -265,7 +246,18 @@ def handle_customer_registration(user_id, text):
         user_states[user_id] = {'last_message': '', 'context': 'idle'}
     state = user_states[user_id]
     if 'customer_id' in state:
-        return f"**User is already registered** 😊\nYou are already registered with Customer ID: `{state['customer_id']}`."
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "User Already Registered 😊"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"You are already registered with Customer ID: `{state['customer_id']}`."}
+                }
+            ]
+        }
     if "register:" in text.lower():
         try:
             _, details = text.lower().split("register:", 1)
@@ -290,28 +282,105 @@ def handle_customer_registration(user_id, text):
             users_df.to_csv(USERS_PATH, index=False)
             welcome_msg = f"Welcome to GrowBizz, {name}! Enjoy your shopping! 🛒\n📍 Address: {address}\n📞 Phone: {phone}"
             whatsapp_response = send_whatsapp_message(user_id, welcome_msg)
-            return f"**Registration Successful** ✅\nCustomer ID: `{customer_id}`\n{whatsapp_response}"
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Registration Successful ✅"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"Customer ID: `{customer_id}`\n{whatsapp_response}"}
+                    }
+                ]
+            }
         except Exception as e:
             logging.error(f"Registration error for {user_id}: {e}")
-            return FALLBACK_RESPONSES["register"]
-    return "Please use: `register: name, email, phone, language, address` 📝"
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Registration Failed 🙁"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["register"]}
+                    }
+                ]
+            }
+    return {
+        "blocks": [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "Registration Help 📝"}
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "Please use: `register: name, email, phone, language, address`"}
+            }
+        ]
+    }
 
 # Purchase Processing
 def process_purchase(user_id, text):
     if user_id not in user_states or 'customer_id' not in user_states[user_id]:
-        return "Please register first using: `register: name, email, phone, language, address` 📝"
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "Please register first using: `register: name, email, phone, language, address` 📝"}
+                }
+            ]
+        }
     if "purchase:" not in text.lower():
-        return "Please use: `purchase: product, quantity` 🛍️"
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Purchase Help 🛍️"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "Please use: `purchase: product, quantity`"}
+                }
+            ]
+        }
     try:
         _, details = text.lower().split("purchase:", 1)
         product, quantity = [x.strip() for x in details.split(',', 1)]
         quantity = int(quantity)
         inventory = load_inventory()
         if product not in inventory['Product'].values:
-            return f"Product '{product}' not found in inventory. 🙁"
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"Product '{product}' not found in inventory."}
+                    }
+                ]
+            }
         stock = inventory[inventory['Product'] == product]['Stock'].iloc[0]
         if stock < quantity:
-            return f"Insufficient stock for '{product}'. Available: {stock} 📦"
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"Insufficient stock for '{product}'. Available: {stock} 📦"}
+                    }
+                ]
+            }
         price = inventory[inventory['Product'] == product]['Price'].iloc[0]
         update_inventory(product, quantity)
         update_sales_data(product, quantity, price)
@@ -319,10 +388,32 @@ def process_purchase(user_id, text):
         purchase_msg = f"Purchase confirmed: {quantity} x {product} for ₹{price * quantity:,.2f} 🛒"
         whatsapp_response = send_whatsapp_message(user_id, purchase_msg)
         email_response = send_email(user_id, "Purchase Confirmation", purchase_msg, "invoice_A35432.pdf" if os.path.exists("invoice_A35432.pdf") else None)
-        return f"{purchase_msg}\n{invoice_msg}\n{whatsapp_response}\n{email_response}"
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Purchase Confirmed 🛒"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"{purchase_msg}\n{invoice_msg['blocks'][1]['text']['text']}\n{whatsapp_response}\n{email_response}"}
+                }
+            ]
+        }
     except Exception as e:
         logging.error(f"Purchase error for {user_id}: {e}")
-        return FALLBACK_RESPONSES["purchase"]
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Purchase Failed 🙁"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["purchase"]}
+                }
+            ]
+        }
 
 # Invoice Generation
 def generate_invoice(customer_id=None, product=None, user_id=None):
@@ -331,9 +422,18 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
             users_df = load_users()
             customer = users_df[users_df['customer_id'] == customer_id].iloc[0] if customer_id in users_df['customer_id'].values else None
             if not customer:
-                return "Customer not found in users.csv. 🙁"
-
-            # HTML template for invoice
+                return {
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "Invoice Generation 📄"}
+                        },
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "Customer not found in users.csv. 🙁"}
+                        }
+                    ]
+                }
             html_content = f"""
             <!DOCTYPE html>
             <html lang="en">
@@ -343,166 +443,32 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
                 <title>Shoe Shop Invoice</title>
                 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
                 <style>
-                    body {{
-                        font-family: 'Inter', sans-serif;
-                        margin: 0;
-                        padding: 0;
-                        background-color: #f9f9f9;
-                        color: #333;
-                        line-height: 1.7;
-                    }}
-                    .container {{
-                        max-width: 900px;
-                        margin: 50px auto;
-                        padding: 50px;
-                        background-color: #fff;
-                        border-radius: 15px;
-                        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.1);
-                    }}
-                    header {{
-                        text-align: center;
-                        margin-bottom: 40px;
-                        border-bottom: 2px solid #e0e0e0;
-                        padding-bottom: 30px;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        flex-direction: column;
-                    }}
-                    header h1 {{
-                        color: #2c3e50;
-                        font-weight: 800;
-                        margin: 0 0 10px 0;
-                        font-size: 2.5em;
-                        text-align: center;
-                    }}
-                    header p {{
-                        font-size: 1.1em;
-                        color: #7f8c8d;
-                        margin-top: 0;
-                        text-align: center;
-                    }}
-                    .invoice-logo {{
-                        width: 120px;
-                        height: 120px;
-                        border-radius: 50%;
-                        margin-bottom: 20px;
-                        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
-                        background-color: #ffffff;
-                    }}
-                    .invoice-details {{
-                        margin-bottom: 40px;
-                        display: flex;
-                        justify-content: space-between;
-                        font-size: 1.1em;
-                    }}
-                    .invoice-details .info, .invoice-details .date {{
-                        text-align: left;
-                    }}
-                    .billing-shipping {{
-                        display: flex;
-                        justify-content: space-between;
-                        margin-bottom: 40px;
-                        font-size: 1.1em;
-                    }}
-                    .billing-shipping div {{
-                        flex: 1;
-                        text-align: left;
-                        padding: 20px;
-                        border-radius: 12px;
-                        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.08);
-                        background: linear-gradient(135deg, #ffffff, #f0f0f0);
-                        border: 1px solid #dcdcdc;
-                    }}
-                    .billing-shipping strong {{
-                        color: #3498db;
-                    }}
-                    .table-responsive {{
-                        overflow-x: auto;
-                        margin-bottom: 50px;
-                    }}
-                    table {{
-                        width: 100%;
-                        border-collapse: separate;
-                        border-spacing: 0;
-                        background-color: #fff;
-                        margin-bottom: 30px;
-                        border-radius: 12px;
-                        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
-                        border: none;
-                    }}
-                    th, td {{
-                        padding: 12px 18px;
-                        text-align: left;
-                        border-bottom: 1px solid #e0e0e0;
-                    }}
-                    th {{
-                        background-color: #f0f0f0;
-                        color: #2c3e50;
-                        font-weight: 600;
-                        text-transform: uppercase;
-                        letter-spacing: 0.08em;
-                        border-bottom: 2px solid #b0bec5;
-                        font-size: 1.1em;
-                    }}
-                    td {{
-                        font-size: 1.1em;
-                        color: #555;
-                    }}
-                    tbody tr:last-child td {{
-                        border-bottom: none;
-                    }}
-                    tfoot {{
-                        text-align: right;
-                        font-weight: bold;
-                        font-size: 1.2em;
-                        color: #2c3e50;
-                    }}
-                    .total-section {{
-                        text-align: right;
-                        margin-top: 50px;
-                        font-size: 1.7em;
-                        background: linear-gradient(to right, #FFB74D, #F57C00);
-                        -webkit-background-clip: text;
-                        color: transparent;
-                    }}
-                    .payment-terms, .comments {{
-                        margin-top: 40px;
-                        font-size: 0.95em;
-                        border-top: 2px solid #dcdcdc;
-                        padding-top: 25px;
-                    }}
-                    .payment-terms {{
-                        color: #e74c3c;
-                        font-weight: 600;
-                    }}
-                    .comments {{
-                        color: #2c3e50;
-                        font-style: italic;
-                    }}
-                    .signature-container {{
-                        margin-top: 50px;
-                        display: flex;
-                        justify-content: center;
-                        align-items: center;
-                        flex-direction: column;
-                    }}
-                    .signature-line {{
-                        border-bottom: 1px solid #90a4ae;
-                        width: 300px;
-                        margin-top: 10px;
-                    }}
-                    .insights-section {{
-                        margin-top: 40px;
-                        padding: 20px;
-                        background-color: #f8f8f8;
-                        border-radius: 10px;
-                    }}
-                    .insights-section h2 {{
-                        color: #2c3e50;
-                        font-size: 1.5em;
-                        margin-bottom: 15px;
-                    }}
+                    body {{ font-family: 'Inter', sans-serif; margin: 0; padding: 0; background-color: #f9f9f9; color: #333; line-height: 1.7; }}
+                    .container {{ max-width: 900px; margin: 50px auto; padding: 50px; background-color: #fff; border-radius: 15px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.1); }}
+                    header {{ text-align: center; margin-bottom: 40px; border-bottom: 2px solid #e0e0e0; padding-bottom: 30px; display: flex; align-items: center; justify-content: center; flex-direction: column; }}
+                    header h1 {{ color: #2c3e50; font-weight: 800; margin: 0 0 10px 0; font-size: 2.5 navigator; text-align: center; }}
+                    header p {{ font-size: 1.1em; color: #7f8c8d; margin-top: 0; text-align: center; }}
+                    .invoice-logo {{ width: 120px; height: 120px; border-radius: 50%; margin-bottom: 20px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1); background-color: #ffffff; }}
+                    .invoice-details {{ margin-bottom: 40px; display: flex; justify-content: space-between; font-size: 1.1em; }}
+                    .invoice-details .info, .invoice-details .date {{ text-align: left; }}
+                    .billing-shipping {{ display: flex; justify-content: space-between; margin-bottom: 40px; font-size: 1.1em; }}
+                    .billing-shipping div {{ flex: 1; text-align: left; padding: 20px; border-radius: 12px; box-shadow: 0 6px 12px rgba(0, 0, 0, 0.08); background: linear-gradient(135deg, #ffffff, #f0f0f0); border: 1px solid #dcdcdc; }}
+                    .billing-shipping strong {{ color: #3498db; }}
+                    .table-responsive {{ overflow-x: auto; margin-bottom: 50px; }}
+                    table {{ width: 100%; border-collapse: separate; border-spacing: 0; background-color: #fff; margin-bottom: 30px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05); border: none; }}
+                    th, td {{ padding: 12px 18px; text-align: left; border-bottom: 1px solid #e0e0e0; }}
+                    th {{ background-color: #f0f0f0; color: #2c3e50; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 2px solid #b0bec5; font-size: 1.1em; }}
+                    td {{ font-size: 1.1em; color: #555; }}
+                    tbody tr:last-child td {{ border-bottom: none; }}
+                    tfoot {{ text-align: right; font-weight: bold; font-size: 1.2em; color: #2c3e50; }}
+                    .total-section {{ text-align: right; margin-top: 50px; font-size: 1.7em; background: linear-gradient(to right, #FFB74D, #F57C00); -webkit-background-clip: text; color: transparent; }}
+                    .payment-terms, .comments {{ margin-top: 40px; font-size: 0.95em; border-top: 2px solid #dcdcdc; padding-top: 25px; }}
+                    .payment-terms {{ color: #e74c3c; font-weight: 600; }}
+                    .comments {{ color: #2c3e50; font-style: italic; }}
+                    .signature-container {{ margin-top: 50px; display: flex; justify-content: center; align-items: center; flex-direction: column; }}
+                    .signature-line {{ border-bottom: 1px solid #90a4ae; width: 300px; margin-top: 10px; }}
+                    .insights-section {{ margin-top: 40px; padding: 20px; background-color: #f8f8f8; border-radius: 10px; }}
+                    .insights-section h2 {{ color: #2c3e50; font-size: 1.5em; margin-bottom: 15px; }}
                 </style>
             </head>
             <body>
@@ -518,7 +484,7 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
                             <p>Invoice Number: A35432</p>
                         </div>
                         <div class="date">
-                            <p>Date: April 04, 2025</p>
+                            <p>Date: April 04, 2019</p>
                         </div>
                     </div>
                     <div class="billing-shipping">
@@ -593,50 +559,103 @@ def generate_invoice(customer_id=None, product=None, user_id=None):
             </html>
             """
 
-            # Calculate insights for April
             df = load_sales_data()
-            april_df = df[(df['Order Date'].dt.month == 4) & (df['Order Date'].dt.year == 2025)]
+            april_df = df[(df['Order Date'].dt.month == 4) & (df['Order Date'].dt.year == 2019)]
             total_sales = april_df["Price Each"].sum() if not april_df.empty else 0
             days_in_april = 30
             avg_daily_sales = total_sales / days_in_april if total_sales > 0 else 0
             best_selling_product = april_df.groupby("Product")["Quantity Ordered"].sum().idxmax() if not april_df.empty else "N/A"
 
-            # Inject insights into HTML
             html_content = html_content.replace("[Calculated dynamically below]", 
                 f"₹{total_sales:,.2f}<br>₹{avg_daily_sales:,.2f}<br>{best_selling_product}")
 
-            # Convert HTML to PDF
             invoice_path = os.path.join(BASE_DIR, "invoice_A35432.pdf")
             HTML(string=html_content).write_pdf(invoice_path)
 
-            # Send to WhatsApp
             whatsapp_msg = f"Hey {customer['name']} 👋, thank you for your latest purchase with Smart Shoes 👟. Here's your invoice against your order A35432. Visit us again. We have exciting discounts only for you! 🎉"
             whatsapp_response = send_whatsapp_media_message(user_id, whatsapp_msg, media_path=invoice_path)
 
-            # Upload to DM
-            dm_channel = get_dm_channel(user_id)
-            if dm_channel:
+            try:
                 with open(invoice_path, 'rb') as f:
                     client.files_upload_v2(
-                        channel=dm_channel,
+                        channel=event_channel,
                         file=f,
                         filename="invoice_A35432.pdf",
                         title="Smart Shoes Invoice"
                     )
-                return f"**Invoice Generated** 📄\nInvoice sent to your DM as `invoice_A35432.pdf`!\n{whatsapp_response}"
-            return f"Invoice generated at {invoice_path} but not uploaded (no DM channel). 🙁"
+                return {
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "Invoice Generated 📄"}
+                        },
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": f"Invoice uploaded to this channel as `invoice_A35432.pdf`!\n{whatsapp_response}"}
+                        }
+                    ]
+                }
+            except SlackApiError as e:
+                logging.error(f"Invoice upload failed for {user_id}: {e}")
+                return {
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "Invoice Generation 📄"}
+                        },
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": f"Invoice generated at {invoice_path} but not uploaded. 🙁\n{whatsapp_response}"}
+                        }
+                    ]
+                }
         else:
-            return "Invalid parameters for invoice generation. 🙁"
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Invoice Generation 📄"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "Invalid parameters for invoice generation. 🙁"}
+                    }
+                ]
+            }
     except Exception as e:
         logging.error(f"Invoice error for {user_id}: {e}")
-        return FALLBACK_RESPONSES["invoice"]
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Invoice Generation 📄"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["invoice"]}
+                }
+            ]
+        }
 
 # Promotion Generation
 def generate_promotion(prompt, user_id, event_channel):
     try:
         if not os.path.exists(DEFAULT_PROMO_IMG):
             logging.error(f"Promotion image not found at {DEFAULT_PROMO_IMG} for {user_id}")
-            return FALLBACK_RESPONSES["promotion_no_image"]
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["promotion_no_image"]}
+                    }
+                ]
+            }
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        description = model.generate_content(f"Create a short description for a promotion poster based on: {prompt}").text.strip()
         try:
             with open(DEFAULT_PROMO_IMG, 'rb') as f:
                 client.files_upload_v2(
@@ -646,20 +665,64 @@ def generate_promotion(prompt, user_id, event_channel):
                     title="Promotion Image"
                 )
             logging.info(f"Promotion image uploaded to channel {event_channel} for {user_id}")
-            return "**Promotion Generated** 🖼️\nPromotion image uploaded to this channel!"
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Promotion Generated 🖼️"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"{description}\n\nImage uploaded to this channel!"}
+                    }
+                ]
+            }
         except SlackApiError as e:
             logging.error(f"Slack upload failed for {user_id}: {e}")
-            return FALLBACK_RESPONSES["promotion"]
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["promotion"]}
+                    }
+                ]
+            }
     except Exception as e:
         logging.error(f"Promotion generation failed for {user_id}: {e}")
-        return FALLBACK_RESPONSES["promotion"]
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["promotion"]}
+                }
+            ]
+        }
 
 # Chart Generation
 def generate_chart(user_id, query):
     df = load_sales_data()
     if df.empty:
         logging.error(f"Chart failed for {user_id}: No sales data")
-        return FALLBACK_RESPONSES["chart_no_data"]
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Chart Generation 📊"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["chart_no_data"]}
+                }
+            ]
+        }
     cache_key = f"{query}_{df.to_string()[:100]}"
     if cache_key in chart_cache:
         logging.info(f"Using cached chart code for {user_id}: {chart_cache[cache_key]}")
@@ -700,42 +763,94 @@ def generate_chart(user_id, query):
         fig = local_vars.get("fig")
         if not fig:
             logging.error(f"Chart execution failed for {user_id}: No figure generated")
-            return FALLBACK_RESPONSES["chart"]
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Chart Generation 📊"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["chart"]}
+                    }
+                ]
+            }
         img_byte_arr = BytesIO()
         fig.write_image(img_byte_arr, format="png", engine="kaleido")
         img_byte_arr.seek(0)
-        dm_channel = get_dm_channel(user_id)
-        if dm_channel:
-            try:
-                client.files_upload_v2(
-                    channel=dm_channel,
-                    file=img_byte_arr,
-                    filename=f"chart_{uuid.uuid4().hex[:8]}.png",
-                    title="Sales Chart"
-                )
-                logging.info(f"Chart uploaded to DM for {user_id}")
-                return "**Chart Generated** 📊\nChart sent to your DM!"
-            except SlackApiError as e:
-                logging.error(f"Chart upload failed for {user_id}: {e}")
-                return FALLBACK_RESPONSES["chart"]
-        logging.warning(f"No DM channel for {user_id}")
-        return FALLBACK_RESPONSES["chart"]
+        try:
+            client.files_upload_v2(
+                channel=event_channel,
+                file=img_byte_arr,
+                filename=f"chart_{uuid.uuid4().hex[:8]}.png",
+                title="Sales Chart"
+            )
+            logging.info(f"Chart uploaded to channel {event_channel} for {user_id}")
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Chart Generated 📊"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "Chart uploaded to this channel!"}
+                    }
+                ]
+            }
+        except SlackApiError as e:
+            logging.error(f"Chart upload failed for {user_id}: {e}")
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Chart Generation 📊"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["chart"]}
+                    }
+                ]
+            }
     except Exception as e:
         logging.error(f"Chart rendering/upload failed for {user_id}: {e}")
-        return FALLBACK_RESPONSES["chart"]
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Chart Generation 📊"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["chart"]}
+                }
+            ]
+        }
 
 # Weekly Sales Analysis
 def generate_weekly_sales_analysis(user_id, event_channel):
     df = load_sales_data()
     if df.empty:
         logging.warning(f"Weekly analysis failed for {user_id}: No sales data.")
-        return FALLBACK_RESPONSES["weekly analysis"]
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["weekly analysis"]}
+                }
+            ]
+        }
     try:
         weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
         total_sales = weekly_sales.sum()
         avg_weekly_sales = weekly_sales.mean()
         best_selling_product = df.groupby('Product')['Quantity Ordered'].sum().idxmax()
-        
+
+        # Plot 1: Weekly Sales Trend
         plt.figure(figsize=(12, 6))
         plt.plot(weekly_sales.index, weekly_sales.values, marker='o', linestyle='-', color='#4CAF50')
         plt.title('Weekly Sales Trend', fontsize=14, fontweight='bold')
@@ -746,49 +861,116 @@ def generate_weekly_sales_analysis(user_id, event_channel):
         plt.savefig(weekly_trend_file)
         plt.close()
 
+        # Plot 2: Overall Sales Trend
+        plt.figure(figsize=(12, 6))
+        plt.plot(df['Order Date'], df['Price Each'].cumsum(), color='#2196F3')
+        plt.title('Overall Sales Trend', fontsize=14, fontweight='bold')
+        plt.xlabel('Date', fontsize=12)
+        plt.ylabel('Cumulative Sales (₹)', fontsize=12)
+        plt.grid(True)
+        overall_trend_file = os.path.join(BASE_DIR, f"overall_trend_{uuid.uuid4().hex[:8]}.png")
+        plt.savefig(overall_trend_file)
+        plt.close()
+
+        # Plot 3: Sales Distribution
+        mu, std = norm.fit(df['Price Each'].dropna())
+        plt.figure(figsize=(10, 6))
+        sns.histplot(df['Price Each'], kde=True, stat="density", color='#2196F3')
+        x = np.linspace(df['Price Each'].min(), df['Price Each'].max(), 100)
+        plt.plot(x, norm.pdf(x, mu, std), 'r-', lw=2, label=f'Normal fit (μ={mu:.2f}, σ={std:.2f})')
+        plt.title('Sales Distribution', fontsize=14, fontweight='bold')
+        plt.xlabel('Sales Amount (₹)', fontsize=12)
+        plt.ylabel('Density', fontsize=12)
+        plt.legend()
+        sales_dist_file = os.path.join(BASE_DIR, f"sales_distribution_{uuid.uuid4().hex[:8]}.png")
+        plt.savefig(sales_dist_file)
+        plt.close()
+
         insights = (
-            f"**Weekly Sales Analysis** 📈\n"
-            f"🔹 **Total Sales**: ₹{total_sales:,.2f}\n"
-            f"🔹 **Average Weekly Sales**: ₹{avg_weekly_sales:,.2f}\n"
-            f"🔹 **Best Selling Product**: {best_selling_product} 🔥\n"
-            f"📊 The chart above shows the sales trend over recent weeks."
+            f"*Total Sales*: ₹{total_sales:,.2f}\n"
+            f"*Average Weekly Sales*: ₹{avg_weekly_sales:,.2f}\n"
+            f"*Best Selling Product*: {best_selling_product} 🔥\n\n"
+            f"*Weekly Sales Trend*: Shows sales fluctuations week by week. 📈\n"
+            f"*Overall Sales Trend*: Tracks total sales growth over time. 📊\n"
+            f"*Sales Distribution*: Displays the spread of sale amounts with a normal fit. 📉"
         )
 
-        try:
-            with open(weekly_trend_file, 'rb') as f:
+        for i, file in enumerate([weekly_trend_file, overall_trend_file, sales_dist_file], 1):
+            with open(file, 'rb') as f:
                 client.files_upload_v2(
                     channel=event_channel,
                     file=f,
-                    filename=os.path.basename(weekly_trend_file),
-                    title="Weekly Sales Trend"
+                    filename=os.path.basename(file),
+                    title=f"Graph {i}: {'Weekly Sales Trend' if i == 1 else 'Overall Sales Trend' if i == 2 else 'Sales Distribution'}"
                 )
-            os.remove(weekly_trend_file)
-            return f"{insights}\n**Chart Uploaded** 📊\nWeekly sales trend uploaded to this channel!"
-        except SlackApiError as e:
-            logging.error(f"Weekly analysis upload failed for {user_id}: {e}")
-            return f"{insights}\nFailed to upload chart. 🙁"
+            os.remove(file)
+
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": insights}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "Graphs uploaded to this channel! 📊"}
+                }
+            ]
+        }
     except Exception as e:
         logging.error(f"Weekly analysis error for {user_id}: {e}")
-        return FALLBACK_RESPONSES["weekly analysis"]
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["weekly analysis"]}
+                }
+            ]
+        }
 
-# Sales Insights and Recommendations
+# Sales Insights
 def generate_sales_insights(user_id=None):
     df = load_sales_data()
     inventory_df = load_inventory()
     if df.empty:
         logging.warning(f"Insights failed for {user_id}: No sales data.")
-        return FALLBACK_RESPONSES["insights_no_data"]
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Sales Insights for April 2019 📊"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "No sales data available. 🙁"}
+                }
+            ]
+        }
     try:
-        april_df = df[(df['Order Date'].dt.month == 4) & (df['Order Date'].dt.year == 2025)]
+        april_df = df[(df['Order Date'].dt.month == 4) & (df['Order Date'].dt.year == 2019)]
         if april_df.empty:
-            return "**Sales Insights for April** 📊\nNo sales data available for April 2025. 🙁"
+            latest_month = df['Order Date'].dt.to_period('M').max()
+            april_df = df[df['Order Date'].dt.to_period('M') == latest_month]
+            logging.info(f"No data for April 2019 for {user_id}, using {latest_month}")
+            month_text = f"{latest_month.strftime('%B %Y')} (No April 2019 data)"
+        else:
+            month_text = "April 2019"
+            logging.info(f"April 2019 data for {user_id}: {april_df.shape[0]} rows")
 
         total_sales = april_df["Price Each"].sum()
-        days_in_april = 30
-        weeks_in_april = 4.29  # Approx weeks
-        avg_daily_sales = total_sales / days_in_april
-        avg_weekly_sales = total_sales / weeks_in_april
-        best_selling_product = april_df.groupby("Product")["Quantity Ordered"].sum().idxmax()
+        days_in_month = 30
+        weeks_in_month = 4.29
+        avg_daily_sales = total_sales / days_in_month
+        avg_weekly_sales = total_sales / weeks_in_month
+        best_selling_product = april_df.groupby("Product")["Quantity Ordered"].sum().idxmax() if not april_df.empty else "N/A"
 
         trend_score = 0
         if user_id and best_selling_product in trend_cache:
@@ -839,28 +1021,180 @@ def generate_sales_insights(user_id=None):
                     )
 
         insights = (
-            f"**Sales Insights for April** 📊\n"
-            f"🔹 **Total Sales**: ₹{total_sales:,.2f}\n"
-            f"🔹 **Average Daily Sales**: ₹{avg_daily_sales:,.2f}\n"
-            f"🔹 **Average Weekly Sales**: ₹{avg_weekly_sales:,.2f}\n"
-            f"🔹 **Best Selling Product**: {best_selling_product} 🔥\n"
-            f"🔹 **GrowBizz Trend Score**: {trend_score:.2f}\n\n"
+            f"*Total Sales*: ₹{total_sales:,.2f}\n"
+            f"*Average Daily Sales*: ₹{avg_daily_sales:,.2f}\n"
+            f"*Average Weekly Sales*: ₹{avg_weekly_sales:,.2f}\n"
+            f"*Best Selling Product*: {best_selling_product} 🔥\n"
+            f"*GrowBizz Trend Score*: {trend_score:.2f}"
         )
+        recommendations_text = ""
         if recommendations["decrease"] or recommendations["increase"] or recommendations["restock"]:
-            insights += "**Recommendations** 📋\n"
+            recommendations_text += "\n*Recommendations* 📋\n"
             if recommendations["decrease"]:
-                insights += "🔽 **Price Decreases**:\n" + "\n".join(recommendations["decrease"]) + "\n"
+                recommendations_text += "🔽 *Price Decreases*:\n" + "\n".join(f"• {r}" for r in recommendations["decrease"]) + "\n"
             if recommendations["increase"]:
-                insights += "🔼 **Price Increases**:\n" + "\n".join(recommendations["increase"]) + "\n"
+                recommendations_text += "🔼 *Price Increases*:\n" + "\n".join(f"• {r}" for r in recommendations["increase"]) + "\n"
             if recommendations["restock"]:
-                insights += "📦 **Restock**:\n" + "\n".join(recommendations["restock"]) + "\n"
+                recommendations_text += "📦 *Restock*:\n" + "\n".join(f"• {r}" for r in recommendations["restock"]) + "\n"
         else:
-            insights += "**Recommendations** 📋\nNo specific recommendations available. 🙁\n"
-        logging.info(f"Generated insights for {user_id}: {insights}")
-        return insights
+            recommendations_text += "\n*Recommendations* 📋\nNo specific recommendations available. 🙁"
+
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": f"Sales Insights for {month_text} 📊"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": insights}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": recommendations_text}
+                }
+            ]
+        }
     except Exception as e:
         logging.error(f"Insights error for {user_id}: {e}")
-        return FALLBACK_RESPONSES["insights"]
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Sales Insights for April 2019 📊"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"Failed to generate insights: {str(e)}. 🙁"}
+                }
+            ]
+        }
+
+# Audio Processing
+def process_audio_query(text, user_id):
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        if "summarize call" in text.lower():
+            audio_path = text.replace("summarize call", "").strip()
+            if not os.path.exists(audio_path):
+                return {
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "Call Summary 🎙️"}
+                        },
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "Audio file not found. Please upload a valid file. 🙁"}
+                        }
+                    ]
+                }
+            prompt = "Transcribe and summarize the key points from this audio call."
+            with open(audio_path, 'rb') as audio_file:
+                audio_data = audio_file.read()
+            contents = [
+                prompt,
+                {"mime_type": "audio/mp3", "data": audio_data}
+            ]
+            response = model.generate_content(contents)
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Call Summary 🎙️"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": response.text.strip()}
+                    }
+                ]
+            }
+        elif "bengali voice" in text.lower():
+            parts = text.lower().split("bengali voice")
+            audio_path = parts[1].strip().split()[0] if len(parts) > 1 else ""
+            query = " ".join(parts[1].strip().split()[1:]) if len(parts[1].strip().split()) > 1 else "Transcribe and translate to English"
+            if not os.path.exists(audio_path):
+                return {
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "Bengali Voice Message 🎙️"}
+                        },
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "Audio file not found. Please upload a valid file. 🙁"}
+                        }
+                    ]
+                }
+            prompt = f"Process this Bengali audio: {query}"
+            with open(audio_path, 'rb') as audio_file:
+                audio_data = audio_file.read()
+            contents = [
+                prompt,
+                {"mime_type": "audio/mp3", "data": audio_data}
+            ]
+            response = model.generate_content(contents)
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Bengali Voice Message 🎙️"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": response.text.strip()}
+                    }
+                ]
+            }
+        else:
+            audio_path = text.replace("audio:", "").strip()
+            if not os.path.exists(audio_path):
+                return {
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "Audio Processing 🎙️"}
+                        },
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "Audio file not found. Please upload a valid file. 🙁"}
+                        }
+                    ]
+                }
+            prompt = "Transcribe and summarize the key points from this audio."
+            with open(audio_path, 'rb') as audio_file:
+                audio_data = audio_file.read()
+            contents = [
+                prompt,
+                {"mime_type": "audio/mp3", "data": audio_data}
+            ]
+            response = model.generate_content(contents)
+            return {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Audio Processing 🎙️"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": response.text.strip()}
+                    }
+                ]
+            }
+    except Exception as e:
+        logging.error(f"Audio processing error for {user_id}: {e}")
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Audio Processing 🎙️"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["audio"]}
+                }
+            ]
+        }
 
 # Query Processing
 def process_query(text, user_id, event_channel):
@@ -872,36 +1206,56 @@ def process_query(text, user_id, event_channel):
     logging.info(f"Processing query: '{text}' from {user_id} in {event_channel}")
     try:
         if "register" in text:
-            return handle_customer_registration(user_id, text)
+            response = handle_customer_registration(user_id, text)
         elif "purchase:" in text:
-            return process_purchase(user_id, text)
+            response = process_purchase(user_id, text)
         elif "weekly analysis" in text:
-            return generate_weekly_sales_analysis(user_id, event_channel)
+            response = generate_weekly_sales_analysis(user_id, event_channel)
         elif "insights" in text or "sales insights" in text:
-            return generate_sales_insights(user_id)
+            response = generate_sales_insights(user_id)
         elif "promotion:" in text or "generate promotion" in text or "promotion poster" in text:
             prompt = text.replace("promotion:", "").replace("generate promotion", "").replace("promotion poster", "").strip()
-            return generate_promotion(prompt, user_id, event_channel)
+            response = generate_promotion(prompt, user_id, event_channel)
         elif "whatsapp" in text or "send whatsapp message" in text:
             message = text.replace("whatsapp", "").replace("send whatsapp message", "").strip() or "Hello from GrowBizz! 😊"
-            return send_whatsapp_message(user_id, message)
+            response = send_whatsapp_message(user_id, message)
+            response = {
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "WhatsApp Message 📱"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": response}
+                    }
+                ]
+            }
         elif "invoice" in text or "generate invoice" in text:
-            return generate_invoice(None, None, user_id)
+            response = generate_invoice(None, None, user_id)
         elif "chart" in text:
-            return generate_chart(user_id, text)
-        elif "audio:" in text:
-            audio_path = text.replace("audio:", "").strip()
-            if os.path.exists(audio_path):
-                prompt = "Transcribe and summarize the key points from this audio."
-                return process_audio(audio_path, prompt, user_id)
-            return "Audio file not found. Please upload a valid file. 🎙️"
+            response = generate_chart(user_id, text)
+        elif "audio:" in text or "summarize call" in text or "bengali voice" in text:
+            response = process_audio_query(text, user_id)
         else:
             model = genai.GenerativeModel('gemini-1.5-flash')
             retries = 3
             for attempt in range(retries):
                 try:
                     response = model.generate_content(f"Respond to this user query: {text}")
-                    return response.text.strip()
+                    response = {
+                        "blocks": [
+                            {
+                                "type": "header",
+                                "text": {"type": "plain_text", "text": "Response 🤔"}
+                            },
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": response.text.strip()}
+                            }
+                        ]
+                    }
+                    break
                 except exceptions.ResourceExhausted as e:
                     if attempt < retries - 1:
                         wait_time = 22 * (2 ** attempt)
@@ -909,13 +1263,63 @@ def process_query(text, user_id, event_channel):
                         time.sleep(wait_time)
                     else:
                         logging.error(f"Default query failed for {user_id} due to API quota: {e}")
-                        return FALLBACK_RESPONSES["default"]
+                        response = {
+                            "blocks": [
+                                {
+                                    "type": "header",
+                                    "text": {"type": "plain_text", "text": "Error 🙁"}
+                                },
+                                {
+                                    "type": "section",
+                                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}
+                                }
+                            ]
+                        }
                 except Exception as e:
                     logging.error(f"Default query error for {user_id}: {e}")
-                    return FALLBACK_RESPONSES["default"]
+                    response = {
+                        "blocks": [
+                            {
+                                "type": "header",
+                                "text": {"type": "plain_text", "text": "Error 🙁"}
+                            },
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}
+                            }
+                        ]
+                    }
+        if isinstance(response, dict) and "blocks" in response:
+            client.chat_postMessage(channel=event_channel, blocks=response["blocks"])
+        elif isinstance(response, str):
+            client.chat_postMessage(
+                channel=event_channel,
+                blocks=[
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "Response 📋"}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": response}
+                    }
+                ]
+            )
+        return response
     except Exception as e:
         logging.error(f"Query processing error for {user_id}: {e}")
-        return FALLBACK_RESPONSES["default"]
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Error 🙁"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}
+                }
+            ]
+        }
 
 # FastAPI Endpoints
 @app.post("/register")
@@ -923,21 +1327,24 @@ async def api_register(request: Request):
     data = await request.json()
     text = data.get("text", "")
     user_id = data.get("user_id", "api_user")
-    return JSONResponse({"response": handle_customer_registration(user_id, text)})
+    response = handle_customer_registration(user_id, text)
+    return JSONResponse({"response": response["blocks"]})
 
 @app.post("/purchase")
 async def api_purchase(request: Request):
     data = await request.json()
     text = data.get("text", "")
     user_id = data.get("user_id", "api_user")
-    return JSONResponse({"response": process_purchase(user_id, text)})
+    response = process_purchase(user_id, text)
+    return JSONResponse({"response": response["blocks"]})
 
 @app.post("/query")
 async def api_query(request: Request):
     data = await request.json()
     text = data.get("text", "")
     user_id = data.get("user_id", "api_user")
-    return JSONResponse({"response": process_query(text, user_id, "api_channel")})
+    response = process_query(text, user_id, "api_channel")
+    return JSONResponse({"response": response["blocks"]})
 
 # HTTP Server for Render
 class DummyHandler(BaseHTTPRequestHandler):
@@ -953,7 +1360,7 @@ class DummyHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
 def run_http_server():
-    server = HTTPServer(("", int(os.getenv("PORT", 3000))), DummyHandler)
+    server = HTTPServer(("", int(os.getenv("PORT", 10000))), DummyHandler)
     server.serve_forever()
 
 if __name__ == "__main__":
@@ -968,11 +1375,20 @@ if __name__ == "__main__":
         channel = event['channel']
         response = process_query(text, user_id, channel)
         try:
-            say(response)
+            say(blocks=response["blocks"])
         except SlackApiError as e:
             if e.response["error"] == "not_in_channel":
                 try:
-                    client.chat_postMessage(channel=user_id, text=FALLBACK_RESPONSES["not_in_channel"])
+                    client.chat_postMessage(channel=user_id, blocks=[
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "Channel Issue 🚪"}
+                        },
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["not_in_channel"]}
+                        }
+                    ])
                 except SlackApiError as dm_error:
                     logging.error(f"Failed to send DM for {user_id}: {dm_error}")
             else:
