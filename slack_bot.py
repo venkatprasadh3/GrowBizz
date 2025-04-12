@@ -16,8 +16,7 @@ import google.generativeai as genai
 from google.api_core import exceptions
 import time
 from pytrends.request import TrendReq
-from fpdf import FPDF
-from PIL import Image
+from weasyprint import HTML
 import numpy as np
 from scipy.stats import norm
 from fastapi import FastAPI, Request
@@ -32,7 +31,9 @@ import seaborn as sns
 from googletrans import Translator
 import requests
 import html2text
-from weasyprint import HTML
+
+# Suppress Pytrends FutureWarning
+pd.set_option('future.no_silent_downcasting', True)
 
 # Configuration and Constants
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -63,6 +64,7 @@ pytrends = TrendReq(hl='en-US', tz=360, retries=2, backoff_factor=0.1)
 app = FastAPI()
 translator = Translator()
 processed_events = set()  # Track processed Slack events
+response_cache = {}  # Cache to prevent duplicate responses
 
 FALLBACK_RESPONSES = {
     "register": "Sorry, registration failed. Please try again later. 🙁",
@@ -91,7 +93,7 @@ chart_cache = {}
 # Helper Functions
 def get_user_language(user_id):
     users_df = load_users()
-    user = users_df[users_df['slack_id'] == user_id].iloc[0] if user_id in users_df['slack_id'].values else None
+    user = users_df[users_df['slack_id'] == user_id].iloc[0] if not users_df[users_df['slack_id'] == user_id].empty else None
     return user['language'] if user else DEFAULT_LANGUAGE
 
 def translate_message(text, target_lang):
@@ -404,7 +406,7 @@ def process_purchase(user_id, text):
         price = inventory[inventory['Product'] == product]['Price'].iloc[0]
         update_inventory(product, quantity)
         update_sales_data(product, quantity, price)
-        invoice_msg = generate_invoice(user_states[user_id]['customer_id'], {'product_name': product, 'price': price * quantity, 'quantity': quantity}, user_id)
+        invoice_msg = generate_invoice(user_states[user_id]['customer_id'], {'product_name': product, 'price': price * quantity, 'quantity': quantity}, user_id, None)
         purchase_msg = f"Purchase confirmed: {quantity} x {product} for ₹{price * quantity:,.2f} 🛒"
         whatsapp_response = send_whatsapp_message(user_id, purchase_msg)
         email_response = send_email(user_id, "Purchase Confirmation", purchase_msg, "invoice_A35432.pdf" if os.path.exists("invoice_A35432.pdf") else None)
@@ -442,7 +444,7 @@ def process_purchase(user_id, text):
 # Invoice Generation
 def generate_invoice(customer_id=None, product=None, user_id=None, event_channel=None):
     try:
-        if not user_id or not event_channel:
+        if not user_id:
             return {
                 "blocks": [
                     {
@@ -451,13 +453,13 @@ def generate_invoice(customer_id=None, product=None, user_id=None, event_channel
                     },
                     {
                         "type": "section",
-                        "text": {"type": "mrkdwn", "text": "User ID or channel required for invoice generation. 🙁"}
+                        "text": {"type": "mrkdwn", "text": "User ID required for invoice generation. 🙁"}
                     }
                 ],
-                "text": "Invoice failed: missing user ID or channel."
+                "text": "Invoice failed: missing user ID."
             }
         users_df = load_users()
-        customer = users_df[users_df['slack_id'] == user_id].iloc[0] if user_id in users_df['slack_id'].values else None
+        customer = users_df[users_df['slack_id'] == user_id].iloc[0] if not users_df[users_df['slack_id'] == user_id].empty else None
         if not customer:
             return {
                 "blocks": [
@@ -533,16 +535,50 @@ def generate_invoice(customer_id=None, product=None, user_id=None, event_channel
         invoice_path = os.path.join(BASE_DIR, "invoice_A35432.pdf")
         HTML(string=html_content).write_pdf(invoice_path)
         logging.info(f"Invoice PDF generated at {invoice_path} for {user_id}")
-        try:
-            with open(invoice_path, 'rb') as f:
-                client.files_upload_v2(
-                    channel=event_channel,
-                    file=f,
-                    filename="invoice_A35432.pdf",
-                    title="Smart Shoes Invoice"
-                )
-            whatsapp_msg = f"Hey {customer['name']} 👋, your invoice A35432 is ready! Check it out."
-            whatsapp_response = send_whatsapp_media_message(user_id, whatsapp_msg, media_path=invoice_path)
+        if event_channel:
+            try:
+                with open(invoice_path, 'rb') as f:
+                    client.files_upload_v2(
+                        channel=event_channel,
+                        file=f,
+                        filename="invoice_A35432.pdf",
+                        title="Smart Shoes Invoice"
+                    )
+                whatsapp_msg = f"Hey {customer['name']} 👋, your invoice A35432 is ready! Check it out."
+                whatsapp_response = send_whatsapp_media_message(user_id, whatsapp_msg, media_path=invoice_path)
+                response = {
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "Invoice Generated 📄"}
+                        },
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": f"Invoice uploaded to this channel as `invoice_A35432.pdf`!\n{whatsapp_response}"}
+                        }
+                    ],
+                    "text": "Invoice A35432 generated and uploaded."
+                }
+                logging.info(f"Invoice uploaded for {user_id}: {response}")
+                return response
+            except SlackApiError as e:
+                logging.error(f"Invoice upload failed for {user_id}: {e}")
+                return {
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "Invoice Generation 📄"}
+                        },
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": f"Invoice generated at {invoice_path} but upload failed. 🙁\n{whatsapp_response}"}
+                        }
+                    ],
+                    "text": "Invoice generated but upload failed."
+                }
+        else:
+            whatsapp_msg = f"Hey {customer['name']} 👋, your invoice A35432 is ready!"
+            whatsapp_response = send_whatsapp_message(user_id, whatsapp_msg)
             response = {
                 "blocks": [
                     {
@@ -551,28 +587,12 @@ def generate_invoice(customer_id=None, product=None, user_id=None, event_channel
                     },
                     {
                         "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"Invoice uploaded to this channel as `invoice_A35432.pdf`!\n{whatsapp_response}"}
+                        "text": {"type": "mrkdwn", "text": f"Invoice generated at {invoice_path}.\n{whatsapp_response}"}
                     }
                 ],
-                "text": "Invoice A35432 generated and uploaded."
+                "text": "Invoice A35432 generated."
             }
-            logging.info(f"Invoice uploaded for {user_id}: {response}")
             return response
-        except SlackApiError as e:
-            logging.error(f"Invoice upload failed for {user_id}: {e}")
-            return {
-                "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Invoice Generation 📄"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"Invoice generated at {invoice_path} but upload failed. 🙁\n{whatsapp_response}"}
-                    }
-                ],
-                "text": "Invoice generated but upload failed."
-            }
     except Exception as e:
         logging.error(f"Invoice error for {user_id}: {e}")
         return {
@@ -707,33 +727,21 @@ def generate_chart(user_id, query, event_channel):
                     time.sleep(wait_time)
                 else:
                     logging.error(f"Gemini API quota exhausted for {user_id} after {retries} attempts: {e}")
-                    code = "fig = px.bar(df, x='Product', y='Price Each', title='Sales by Product')"
-                    chart_cache[cache_key] = code
-                    logging.info(f"Using fallback chart code for {user_id}: {code}")
+                    code = None
             except Exception as e:
                 logging.error(f"Chart code generation failed for {user_id}: {e}")
-                code = "fig = px.bar(df, x='Product', y='Price Each', title='Sales by Product')"
-                chart_cache[cache_key] = code
+                code = None
                 break
+        if not code:
+            logging.info(f"Using fallback Matplotlib chart for {user_id}")
+            return generate_fallback_chart(df, user_id, event_channel)
     try:
         local_vars = {"df": df, "px": px}
         exec(code, globals(), local_vars)
         fig = local_vars.get("fig")
         if not fig:
             logging.error(f"Chart execution failed for {user_id}: No figure generated")
-            return {
-                "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "Chart Generation 📊"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["chart"]}
-                    }
-                ],
-                "text": "Chart failed: no figure generated."
-            }
+            return generate_fallback_chart(df, user_id, event_channel)
         img_byte_arr = BytesIO()
         fig.write_image(img_byte_arr, format="png", engine="kaleido", width=800, height=600)
         img_byte_arr.seek(0)
@@ -774,7 +782,45 @@ def generate_chart(user_id, query, event_channel):
                 "text": "Chart upload failed."
             }
     except Exception as e:
-        logging.error(f"Chart rendering/upload failed for {user_id}: {e}")
+        logging.error(f"Chart rendering failed for {user_id}: {e}")
+        return generate_fallback_chart(df, user_id, event_channel)
+
+def generate_fallback_chart(df, user_id, event_channel):
+    try:
+        plt.figure(figsize=(10, 6))
+        product_sales = df.groupby('Product')['Price Each'].sum()
+        product_sales.plot(kind='bar', color='skyblue')
+        plt.title('Sales by Product')
+        plt.xlabel('Product')
+        plt.ylabel('Total Sales (₹)')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        img_byte_arr = BytesIO()
+        plt.savefig(img_byte_arr, format='png')
+        plt.close()
+        img_byte_arr.seek(0)
+        client.files_upload_v2(
+            channel=event_channel,
+            file=img_byte_arr,
+            filename=f"fallback_chart_{uuid.uuid4().hex[:8]}.png",
+            title="Fallback Sales Chart"
+        )
+        logging.info(f"Fallback chart uploaded to channel {event_channel} for {user_id}")
+        return {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Chart Generated 📊"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "Chart uploaded to this channel (using fallback method)!"}
+                }
+            ],
+            "text": "Fallback chart uploaded."
+        }
+    except Exception as e:
+        logging.error(f"Fallback chart failed for {user_id}: {e}")
         return {
             "blocks": [
                 {
@@ -786,7 +832,7 @@ def generate_chart(user_id, query, event_channel):
                     "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["chart"]}
                 }
             ],
-            "text": "Chart rendering failed."
+            "text": "Chart generation failed."
         }
 
 # Weekly Sales Analysis
@@ -1174,10 +1220,18 @@ def process_audio_query(text, user_id):
 def process_query(text, user_id, event_channel):
     text = text.lower().strip()
     if user_id not in user_states:
-        user_states[user_id] = {'last_message': '', 'context': 'idle'}
+        user_states[user_id] = {'last_message': '', 'context': 'idle', 'last_response_time': 0}
     state = user_states[user_id]
     state['last_message'] = text
     logging.info(f"Processing query: '{text}' from {user_id} in {event_channel}")
+
+    # Prevent duplicate responses
+    cache_key = f"{user_id}_{text}_{event_channel}"
+    current_time = time.time()
+    if cache_key in response_cache and (current_time - response_cache[cache_key]['time'] < 5):
+        logging.info(f"Skipping duplicate query: '{text}' from {user_id}")
+        return response_cache[cache_key]['response']
+
     try:
         # Normalize query
         if "weekly sales" in text:
@@ -1266,10 +1320,15 @@ def process_query(text, user_id, event_channel):
                             {
                                 "type": "section",
                                 "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}
-                                }
-                            ],
-                            "text": "Query failed."
-                        }
+                            }
+                        ],
+                        "text": "Query failed."
+                    }
+                    break
+
+        # Cache response
+        response_cache[cache_key] = {'response': response, 'time': current_time}
+
         # Post response to Slack
         try:
             client.chat_postMessage(
@@ -1376,9 +1435,8 @@ if __name__ == "__main__":
         user_id = event['user']
         text = event['text']
         event_channel = event['channel']
-        response = process_query(text, user_id, event_channel)
         try:
-            say(blocks=response["blocks"], text=response.get("text", "GrowBizz response"))
+            response = process_query(text, user_id, event_channel)
         except SlackApiError as e:
             if e.response["error"] == "not_in_channel":
                 try:
