@@ -256,7 +256,7 @@ def handle_customer_registration(user_id, text):
         return {
             "blocks": [
                 {"type": "header", "text": {"type": "plain_text", "text": "Registration Status 📝"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": "**User is already registered**\n*You are already registered* with Customer ID: `{state['customer_id']}`."}}
+                {"type": "section", "text": {"type": "mrkdwn", "text": "*You are already registered* with Customer ID: `{state['customer_id']}`."}}
             ],
             "text": "User is already registered."
         }
