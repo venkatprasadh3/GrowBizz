@@ -2,12 +2,13 @@ pandas<2.3
 slack-sdk
 matplotlib
 pillow
-twilio>=9.5.2
+twilio
 weasyprint
 numpy
 scipy
 fastapi
 uvicorn
+fpdf
 plotly
 seaborn
 googletrans==3.1.0a0
@@ -15,4 +16,6 @@ slack-bolt
 kaleido
 google-generativeai
 pytrends
-urllib3==1.26.18
+requests
+html2text
+urllib3<2.0
