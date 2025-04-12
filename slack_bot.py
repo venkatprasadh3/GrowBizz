@@ -144,14 +144,13 @@ def send_whatsapp_media_message(user_id, message, media_url=None, media_path=Non
     translated_msg = translate_message(message, lang)
     try:
         if media_path and os.path.exists(media_path):
-            # Upload media to a temporary hosting service or use a public URL
-            # For simplicity, assuming media_path is accessible; Twilio requires a URL
-            media_url = media_url or "https://via.placeholder.com/600x400"  # Placeholder for demo
+            # For local testing, media_url is required by Twilio; placeholder used
+            media_url = media_url or "https://via.placeholder.com/600x400"  # Replace with actual URL in production
         twilio_client.messages.create(
             body=translated_msg,
             from_=f"whatsapp:{TWILIO_PHONE_NUMBER}",
-            to=f"whatsapp:{ protips://media_url=media_url if media_url else None,
-            media=media_url if media_url else None
+            to=f"whatsapp:{phone}",
+            media_url=[media_url] if media_url else None
         )
         return f"WhatsApp message sent to {phone}! 📱"
     except Exception as e:
