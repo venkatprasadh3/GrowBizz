@@ -1,13 +1,9 @@
 pandas<2.3
 slack-sdk
 matplotlib
-pillow
 twilio
-weasyprint==61.2
 numpy
 scipy
-fastapi
-uvicorn
 plotly
 seaborn
 googletrans==3.1.0a0
