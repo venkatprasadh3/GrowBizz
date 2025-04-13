@@ -13,7 +13,8 @@ import datetime
 from fastapi import FastAPI, HTTPException, Request, APIRouter
 from fastapi.responses import JSONResponse
 # Configure your Gemini API key (replace with your actual API key)
-client = genai.Client(api_key=")
+GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
+client = genai.Client(api_key=GENAI_API_KEY)
 
 PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
 SALES_DATA_PATH = os.path.join(BASE_DIR, "sales_data.csv")
