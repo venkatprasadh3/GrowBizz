@@ -738,7 +738,7 @@ def generate_sales_insights(user_id=None):
             f"*Average Daily Sales*: ₹{avg_daily_sales:,.2f}\n"
             f"*Average Weekly Sales*: ₹{avg_weekly_sales:,.2f}\n"
             f"*Best Selling Product*: {best_selling_product} 🔥\n"
-            f"*Trend Score*: {trend_score:.2f}"
+            f"*GrowBizz Trend Score*: {trend_score:.2f}"
         )
         recommendations_text = ""
         if recommendations["decrease"] or recommendations["increase"] or recommendations["restock"]:
