@@ -15,7 +15,8 @@ from fastapi.responses import JSONResponse
 # Configure your Gemini API key (replace with your actual API key)
 client = genai.Client(api_key=")
 
-PLOTS_DIR = "fix ur plot directory within the code"
+PLOTS_DIR = os.path.dirname(os.path.abspath(__file__))
+SALES_DATA_PATH = os.path.join(BASE_DIR, "sales_data.csv")
 
 def extract_python_code(llm_response):
     """Extracts Python code from the LLM's response, handling code blocks."""
@@ -109,7 +110,7 @@ def process_csv_and_query(csv_content, user_query):
     except Exception as e:
         return {"response": f"Error processing CSV: {e}", "type": "text"}
     
-csv_file_path = " "  # Replace with the actual path to your CSV file
+csv_file_path = os.path.join(PLOTS_DIR, "sales_data.csv")
 
 csv_data = fetch_csv_content(csv_file_path)
 
