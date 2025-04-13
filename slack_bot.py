@@ -12,6 +12,7 @@ import pandas as pd
 import plotly.express as px
 import io
 import datetime
+import re
 from urllib import request
 from PIL import Image
 from io import BytesIO
@@ -218,7 +219,7 @@ def generate_promotion(slack_id, channel):
             "text": "Promotion failed."
         }
 
-# Visualization Generation
+# Chart Generation (Price Category Pie Chart)
 def generate_chart(slack_id, channel):
     try:
         user = get_user_info(slack_id)
@@ -308,6 +309,223 @@ def generate_chart(slack_id, channel):
             "text": "Chart failed."
         }
 
+# Weekly Analysis
+def generate_weekly_analysis(slack_id, channel):
+    try:
+        user = get_user_info(slack_id)
+        if not user:
+            return {
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": ":calendar: *Weekly Analysis Failed* :calendar:"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Please register with: `register: name, phone`"}}
+                ],
+                "text": "Weekly analysis failed: not registered."
+            }
+
+        name = user["name"]
+        phone = user["phone"]
+        
+        # Load sales data
+        if not os.path.exists(SALES_DATA_PATH):
+            return {
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": ":calendar: *Weekly Analysis Failed* :calendar:"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "No sales data available. 🙁"}}
+                ],
+                "text": "Weekly analysis failed: no data."
+            }
+        
+        df = pd.read_csv(SALES_DATA_PATH)
+        df["Price Each"] = pd.to_numeric(df["Price Each"], errors="coerce")
+        df["Quantity Ordered"] = pd.to_numeric(df["Quantity Ordered"], errors="coerce")
+        df["Order Date"] = pd.to_datetime(df["Order Date"])
+        
+        # Calculate weekly sales
+        df["Total Sales"] = df["Quantity Ordered"] * df["Price Each"]
+        df["Week"] = df["Order Date"].dt.isocalendar().week
+        df["Year"] = df["Order Date"].dt.year
+        weekly_sales = df.groupby(["Year", "Week"])["Total Sales"].sum().reset_index()
+        weekly_sales["Week Label"] = weekly_sales.apply(lambda x: f"{x['Year']}-W{x['Week']:02d}", axis=1)
+        
+        # Create bar chart
+        fig = px.bar(
+            weekly_sales,
+            x="Week Label",
+            y="Total Sales",
+            title="Weekly Sales Analysis",
+            color="Total Sales",
+            color_continuous_scale="Viridis",
+            template="plotly_white"
+        )
+        fig.update_layout(
+            title_font_size=20,
+            font=dict(size=14),
+            margin=dict(t=50, b=50),
+            xaxis_title="Week",
+            yaxis_title="Total Sales ($)",
+            xaxis_tickangle=45,
+            bargap=0.2
+        )
+        
+        # Save plot
+        plot_filename = os.path.join(PLOTS_DIR, f"weekly_sales_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+        fig.write_image(plot_filename, width=800, height=600, engine="kaleido")
+        
+        # Upload to Cloudinary
+        upload_result = cloudinary.uploader.upload(
+            plot_filename,
+            resource_type="image",
+            public_id=f"weekly_sales_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+        chart_url = upload_result["secure_url"]
+        
+        # Generate summary
+        total_weeks = len(weekly_sales)
+        avg_sales = weekly_sales["Total Sales"].mean()
+        max_sales_week = weekly_sales.loc[weekly_sales["Total Sales"].idxmax(), "Week Label"]
+        summary = f"Analyzed {total_weeks} weeks. Average weekly sales: ${avg_sales:.2f}. Highest sales in {max_sales_week}."
+        
+        # Send to Slack
+        with open(plot_filename, "rb") as f:
+            slack_client.files_upload_v2(
+                channel=channel,
+                file=f,
+                filename="weekly_sales.png",
+                title="Weekly Sales Analysis",
+                initial_comment=f":calendar: *Weekly Analysis Generated* :calendar:\n{summary}"
+            )
+        
+        # Send WhatsApp message
+        message = f"Hey {name} 👋, here's your weekly sales analysis for Smart Shoes 👟! Check out the trends and plan your next big sale. More insights await!"
+        send_whatsapp_message(phone, message, chart_url)
+        
+        # Clean up
+        os.remove(plot_filename)
+        
+        logging.info(f"Weekly analysis sent for {slack_id}: {chart_url}")
+        return {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": ":calendar: *Weekly Analysis Generated* :calendar:"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"{summary}\nChart sent to this channel and WhatsApp!\nURL: {chart_url}"}}
+            ],
+            "text": "Weekly analysis generated."
+        }
+    except Exception as e:
+        logging.error(f"Weekly analysis error for {slack_id}: {e}")
+        return {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": ":calendar: *Weekly Analysis Failed* :calendar:"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Sorry, weekly analysis failed. Try again later. 🙁"}}
+            ],
+            "text": "Weekly analysis failed."
+        }
+
+# Sales Insights
+def generate_sales_insights(slack_id, channel):
+    try:
+        user = get_user_info(slack_id)
+        if not user:
+            return {
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": ":bar_chart: *Sales Insights Failed* :bar_chart:"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Please register with: `register: name, phone`"}}
+                ],
+                "text": "Sales insights failed: not registered."
+            }
+
+        name = user["name"]
+        phone = user["phone"]
+        
+        # Load sales data
+        if not os.path.exists(SALES_DATA_PATH):
+            return {
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": ":bar_chart: *Sales Insights Failed* :bar_chart:"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "No sales data available. 🙁"}}
+                ],
+                "text": "Sales insights failed: no data."
+            }
+        
+        df = pd.read_csv(SALES_DATA_PATH)
+        df["Price Each"] = pd.to_numeric(df["Price Each"], errors="coerce")
+        df["Quantity Ordered"] = pd.to_numeric(df["Quantity Ordered"], errors="coerce")
+        df["Order Date"] = pd.to_datetime(df["Order Date"])
+        
+        # Calculate metrics
+        df["Total Sales"] = df["Quantity Ordered"] * df["Price Each"]
+        total_revenue = df["Total Sales"].sum()
+        top_product = df.groupby("Product")["Quantity Ordered"].sum().idxmax()
+        avg_order_value = df["Total Sales"].mean()
+        
+        # Create line chart
+        df["Date"] = df["Order Date"].dt.date
+        daily_sales = df.groupby("Date")["Total Sales"].sum().reset_index()
+        fig = px.line(
+            daily_sales,
+            x="Date",
+            y="Total Sales",
+            title="Sales Trend Over Time",
+            template="plotly_white",
+            markers=True
+        )
+        fig.update_layout(
+            title_font_size=20,
+            font=dict(size=14),
+            margin=dict(t=50, b=50),
+            xaxis_title="Date",
+            yaxis_title="Total Sales ($)"
+        )
+        
+        # Save plot
+        plot_filename = os.path.join(PLOTS_DIR, f"sales_trend_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+        fig.write_image(plot_filename, width=800, height=600, engine="kaleido")
+        
+        # Upload to Cloudinary
+        upload_result = cloudinary.uploader.upload(
+            plot_filename,
+            resource_type="image",
+            public_id=f"sales_trend_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+        chart_url = upload_result["secure_url"]
+        
+        # Generate summary
+        summary = f"Total Revenue: ${total_revenue:.2f}\nTop Product: {top_product}\nAverage Order Value: ${avg_order_value:.2f}"
+        
+        # Send to Slack
+        with open(plot_filename, "rb") as f:
+            slack_client.files_upload_v2(
+                channel=channel,
+                file=f,
+                filename="sales_trend.png",
+                title="Sales Trend Over Time",
+                initial_comment=f":bar_chart: *Sales Insights Generated* :bar_chart:\n{summary}"
+            )
+        
+        # Send WhatsApp message
+        message = f"Hey {name} 👋, dive into your Smart Shoes sales insights 👟! See key metrics and trends to boost your business. More data awaits!"
+        send_whatsapp_message(phone, message, chart_url)
+        
+        # Clean up
+        os.remove(plot_filename)
+        
+        logging.info(f"Sales insights sent for {slack_id}: {chart_url}")
+        return {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": ":bar_chart: *Sales Insights Generated* :bar_chart:"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"{summary}\nChart sent to this channel and WhatsApp!\nURL: {chart_url}"}}
+            ],
+            "text": "Sales insights generated."
+        }
+    except Exception as e:
+        logging.error(f"Sales insights error for {slack_id}: {e}")
+        return {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": ":bar_chart: *Sales Insights Failed* :bar_chart:"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Sorry, sales insights failed. Try again later. 🙁"}}
+            ],
+            "text": "Sales insights failed."
+        }
+
 # User Registration
 def handle_registration(slack_id, text):
     try:
@@ -364,7 +582,7 @@ def process_query(text, slack_id, channel):
     if any(g in text for g in ["hello", "hi", "how are you"]):
         return {
             "blocks": [
-                {"type": "section", "text": {"type": "mrkdwn", "text": "Hey there! 😊 I'm ready to help with invoices, promotions, charts, or registration. What's up?"}}
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Hey there! 😊 I'm ready to help with invoices, promotions, charts, weekly analysis, sales insights, or registration. What's up?"}}
             ],
             "text": "Greeting response."
         }
@@ -375,7 +593,11 @@ def process_query(text, slack_id, channel):
     elif "generate promotion" in text:
         return generate_promotion(slack_id, channel)
     elif "generate chart" in text:
-        return generate_chart Usted(slack_id, channel)
+        return generate_chart(slack_id, channel)
+    elif "weekly analysis" in text:
+        return generate_weekly_analysis(slack_id, channel)
+    elif "sales insights" in text:
+        return generate_sales_insights(slack_id, channel)
     elif "register:" in text:
         return handle_registration(slack_id, text)
     else:
@@ -393,7 +615,7 @@ def process_query(text, slack_id, channel):
             logging.error(f"Text query error for {slack_id}: {e}")
             return {
                 "blocks": [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": "Oops! Try: `generate invoice`, `generate promotion`, `generate chart`, or `register: name, phone` 🤔"}}
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Oops! Try: `generate invoice`, `generate promotion`, `generate chart`, `weekly analysis`, `sales insights`, or `register: name, phone` 🤔"}}
                 ],
                 "text": "Unknown command."
             }
