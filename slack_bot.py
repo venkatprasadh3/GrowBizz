@@ -107,24 +107,25 @@ def translate_message(text, target_lang):
         logging.error(f"Translation error: {e}")
         return text
 
-def upload_to_cloudinary(file_path=None, file_bytes=None, public_id=None):
+def upload_to_cloudinary(file_path=None, file_bytes=None, public_id=None, resource_type="auto"):
     try:
         if file_path and os.path.exists(file_path):
             upload_result = cloudinary.uploader.upload(
                 file_path,
-                resource_type="auto",
+                resource_type=resource_type,
                 public_id=public_id or f"growbizz_{uuid.uuid4().hex[:8]}"
             )
         elif file_bytes:
             upload_result = cloudinary.uploader.upload(
                 file_bytes,
-                resource_type="auto",
+                resource_type=resource_type,
                 public_id=public_id or f"growbizz_{uuid.uuid4().hex[:8]}"
             )
         else:
             raise ValueError("No file or bytes provided")
         url = upload_result["secure_url"]
         file_url_cache[file_path or public_id] = url
+        logging.info(f"File uploaded to Cloudinary: {url}")
         return url
     except Exception as e:
         logging.error(f"Cloudinary upload failed: {e}")
@@ -155,7 +156,7 @@ def send_whatsapp_message(user_id, message):
         logging.error(f"WhatsApp error for {user_id}: {e}")
         return FALLBACK_RESPONSES["whatsapp"]
 
-def send_whatsapp_media_message(user_id, message, file_path=None, file_bytes=None, public_id=None):
+def send_whatsapp_media_message(user_id, message, file_path=None, file_bytes=None, public_id=None, resource_type="auto"):
     if not twilio_client:
         logging.error("WhatsApp not configured: Twilio credentials missing.")
         return FALLBACK_RESPONSES["whatsapp"]
@@ -170,7 +171,7 @@ def send_whatsapp_media_message(user_id, message, file_path=None, file_bytes=Non
     translated_msg = translate_message(message, lang)
     media_url = file_url_cache.get(file_path or public_id)
     if not media_url:
-        media_url = upload_to_cloudinary(file_path, file_bytes, public_id)
+        media_url = upload_to_cloudinary(file_path, file_bytes, public_id, resource_type)
     if not media_url:
         return FALLBACK_RESPONSES["whatsapp_media"]
     try:
@@ -433,8 +434,13 @@ def generate_invoice(customer_id=None, product=None, user_id=None, event_channel
         """
         invoice_path = "/tmp/invoice_A35432.pdf"
         HTML(string=html_content).write_pdf(invoice_path)
+        public_id = f"invoice_A35432_{uuid.uuid4().hex[:8]}"
+        pdf_url = upload_to_cloudinary(file_path=invoice_path, public_id=public_id, resource_type="raw")
+        if not pdf_url:
+            raise Exception("Failed to upload invoice PDF to Cloudinary")
+        logging.info(f"Invoice PDF uploaded to Cloudinary: {pdf_url}")
         if send_to_whatsapp:
-            whatsapp_response = send_whatsapp_media_message(user_id, "Here is your invoice.", file_path=invoice_path, public_id="invoice_A35432")
+            whatsapp_response = send_whatsapp_media_message(user_id, "Here is your invoice.", file_path=invoice_path, public_id=public_id, resource_type="raw")
             if os.path.exists(invoice_path):
                 os.remove(invoice_path)
             return {
@@ -455,7 +461,7 @@ def generate_invoice(customer_id=None, product=None, user_id=None, event_channel
                 os.remove(invoice_path)
         return {
             "blocks": [
-                {"type": "section", "text": {"type": "mrkdwn", "text": "Invoice uploaded to this channel! 📄"}}
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"Invoice uploaded to this channel! 📄\nPDF URL: {pdf_url}"}}
             ],
             "text": "Invoice generated."
         }
