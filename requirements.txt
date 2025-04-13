@@ -16,6 +16,6 @@ slack-bolt
 kaleido
 google-generativeai
 pytrends
+cloudinary
 requests
-html2text
 urllib3<2.0
