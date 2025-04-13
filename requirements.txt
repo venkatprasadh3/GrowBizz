@@ -3,12 +3,11 @@ slack-sdk
 matplotlib
 pillow
 twilio
-weasyprint
+weasyprint==61.2
 numpy
 scipy
 fastapi
 uvicorn
-fpdf
 plotly
 seaborn
 googletrans==3.1.0a0
