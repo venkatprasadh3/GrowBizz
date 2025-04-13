@@ -17,7 +17,6 @@ from urllib import request
 from PIL import Image
 from io import BytesIO
 import google.generativeai as genai
-from google.generativeai.types import GenerateContentConfig
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -158,15 +157,12 @@ def generate_promotion(slack_id, channel):
         
         # Generate promotion image using img_client
         contents = 'Hi, can you create a 50 percent offer poster for my shoe shop named "Smart Shoes". I need a colorful and attractive shoe image and my shop name "Smart Shoes" in centre and the text "50 percent discount" highlighted'
-        response = img_client.models.generate_content(
-            model="gemini-2.0-flash-exp-image-generation",
-            contents=contents,
-            config=GenerateContentConfig(response_modalities=['Text', 'Image'])
-        )
+        model = img_client.GenerativeModel("gemini-2.0-flash-exp-image-generation")
+        response = model.generate_content(contents)
         
         image_data = None
-        for part in response.candidates[0].content.parts:
-            if part.inline_data is not None:
+        for part in response.parts:
+            if hasattr(part, 'inline_data') and part.inline_data:
                 image_data = part.inline_data.data
                 break
         
