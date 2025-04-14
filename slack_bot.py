@@ -521,8 +521,6 @@ if __name__ == "__main__":
                     text=f"Hi <@{user_id}>! You mentioned me. If you want me to process an audio file, please attach it to your message.",
                     thread_ts=event.get("thread_ts")
                 )
-            except Exception as e:
-                logger.error(f"Error responding to app mention: {e}")
 
     @slack_app.event("file_shared")
     def handle_file_shared(event, client, logger):
