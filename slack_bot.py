@@ -20,10 +20,11 @@ SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "+14155238886")
-CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "dnnj6hykk")
-CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY", "991754979222148")
-CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET", "u-C4hv1OBts-wGDrkfDeGRv4OCk")
+TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
+CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
+GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
 DEFAULT_LANGUAGE = "English"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -220,7 +221,7 @@ def process_audio(audio_file_path: str, prompt: str) -> str:
         The processed audio content as a string.
     """
     try:
-        client = genai.Client(api_key="AIzaSyCKPxpCqQZstZdFexpoVEuiQxUGM1YHvig")
+        client = genai.Client(api_key=GENAI_API_KEY)
         myfile = client.files.upload(file=audio_file_path)
         contents = [
             prompt,
