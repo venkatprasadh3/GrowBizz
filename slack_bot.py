@@ -456,20 +456,73 @@ if __name__ == "__main__":
     from slack_bolt.adapter.socket_mode import SocketModeHandler
     slack_app = SlackApp(token=SLACK_BOT_TOKEN)
 
-    @slack_app.event("app_mention")
-    def handle_app_mention(event, say, client, logger):
-        text = event["text"]
+    @slack_app.event({"type": "message", "subtype": None})
+    def handle_message_with_mention_and_file(event, client, logger):
+        text = event.get("text", "")
         channel_id = event["channel"]
         user_id = event["user"]
-        # Respond to the mention
-        try:
-            client.chat_postMessage(
-                channel=channel_id,
-                text=f"Hi <@{user_id}>! You mentioned me. How can I help you with text or audio files today? Please upload an audio file with your request in the caption, or just send a text message.",
-                thread_ts=event.get("thread_ts")
-            )
-        except Exception as e:
-            logger.error(f"Error responding to app mention: {e}")
+        files = event.get("files", [])
+        bot_user_id = client.auth_test().get("user_id")
+    
+        if bot_user_id in text:  # Check if the bot is mentioned
+            if files:
+                for file in files:
+                    if file.get("mimetype", "").startswith("audio/"):
+                        file_id = file["id"]
+                        try:
+                            file_info = client.files_info(file=file_id)
+                            file_details = file_info["file"]
+                            download_url = file_details["url_private_download"]
+                            headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+                            response = requests.get(download_url, headers=headers, stream=True)
+                            response.raise_for_status()
+    
+                            with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    tmp_file.write(chunk)
+                                local_audio_path = tmp_file.name
+    
+                            # Try to get a prompt from the message text
+                            prompt = text.replace(f"<@{bot_user_id}>", "").strip()
+    
+                            if prompt:
+                                client.chat_postMessage(
+                                    channel=channel_id,
+                                    text=f"Processing audio with the prompt: '{prompt}'...",
+                                    thread_ts=event.get("thread_ts")
+                                )
+                                processed_text = process_audio(local_audio_path, prompt)
+                                client.chat_postMessage(
+                                    channel=channel_id,
+                                    text=f"Processed audio output:\n{processed_text}",
+                                    thread_ts=event.get("thread_ts")
+                                )
+                            else:
+                                client.chat_postMessage(
+                                    channel=channel_id,
+                                    text="Audio file received with a mention, but no specific prompt was provided.",
+                                    thread_ts=event.get("thread_ts")
+                                )
+                            os.remove(local_audio_path)
+                        except requests.exceptions.RequestException as e:
+                            logger.error(f"Error downloading file {file_id}: {e}")
+                            client.chat_postMessage(channel=channel_id, text=f"Error downloading the audio file.", thread_ts=event.get("thread_ts"))
+                        except SlackApiError as e:
+                            logger.error(f"Slack API error for file {file_id}: {e}")
+                            client.chat_postMessage(channel=channel_id, text=f"Error accessing file information.", thread_ts=event.get("thread_ts"))
+                        except Exception as e:
+                            logger.error(f"An error occurred processing file {file_id}: {e}")
+                            client.chat_postMessage(channel=channel_id, text=f"An error occurred while processing the audio file.", thread_ts=event.get("thread_ts"))
+                    # You can add 'else if' conditions here to handle other file types
+            else:
+                # If the bot is mentioned but no files are attached, you can respond to the text mention
+                client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"Hi <@{user_id}>! You mentioned me. If you want me to process an audio file, please attach it to your message.",
+                    thread_ts=event.get("thread_ts")
+                )
+            except Exception as e:
+                logger.error(f"Error responding to app mention: {e}")
 
     @slack_app.event("file_shared")
     def handle_file_shared(event, client, logger):
