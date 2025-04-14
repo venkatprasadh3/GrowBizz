@@ -243,8 +243,7 @@ def generate_invoice(user_id, event_channel):
         }
 
 
-# **Promotion Generation 🖼️**
-def generate_promotion(user_id, event_channel,text):
+def generate_promotion(user_id, event_channel, text):
     try:
         if user_id not in user_states or 'customer_id' not in user_states[user_id]:
             return {
@@ -256,8 +255,7 @@ def generate_promotion(user_id, event_channel,text):
             }
         customer = user_states[user_id]
         image_client = genai.Client(api_key=GENAI_API_KEY)
-        contents = (
-            text)
+        contents = text
         response = image_client.models.generate_content(
             model="gemini-2.0-flash-exp-image-generation",
             contents=contents,
@@ -269,7 +267,8 @@ def generate_promotion(user_id, event_channel,text):
         for part in response.candidates[0].content.parts:
             if part.inline_data is not None:
                 generated_image_data = part.inline_data.data
-                break
+                break
+
         if generated_image_data:
             image = Image.open(BytesIO(generated_image_data))
             # Cloudinary Upload
