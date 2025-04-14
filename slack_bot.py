@@ -473,7 +473,7 @@ def generate_sales_insights(user_id=None):
             "text": "Sales insights failed: no data."
         }
     try:
-        april_df = df[(df['Order Date'].dt.month == 4) & (df['Order Date'])]
+        april_df = df[df['Order Date'].dt.month == 4]
         if april_df.empty:
             latest_month = df['Order Date'].dt.to_period('M').max()
             april_df = df[df['Order Date'].dt.to_period('M') == latest_month]
