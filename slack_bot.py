@@ -352,19 +352,11 @@ def generate_promotion(user_id, event_channel, text):
 def process_audio(audio_file_path: str, prompt: str) -> str:
     try:
         audio_client = genai.Client(api_key=GENAI_API_KEY)
-
-        # Guess the MIME type
-        mime_type, _ = mimetypes.guess_type(audio_file_path)
-        if not mime_type:
-            mime_type = "audio/m4a"
-
-        myfile = audio_client.files.upload(
-            file=audio_file_path,
-            mime_type=mime_type 
-        )
-
-        contents = [prompt, myfile]
-
+        myfile = audio_client.files.upload(file=audio_file_path)
+        contents = [
+            prompt,
+            myfile
+        ]
         response = audio_client.models.generate_content(
             model="gemini-2.0-flash",
             contents=contents
@@ -664,32 +656,45 @@ def generate_weekly_sales_analysis(user_id, event_channel):
 PLOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plots")
 
 def extract_python_code(llm_response):
+    """Extracts Python code from the LLM's response, handling code blocks."""
     match = re.search(r"```python\n(.*?)\n```", llm_response, re.DOTALL)
-    return match.group(1) if match else llm_response
+    if match:
+        return match.group(1)
+    else:
+        return llm_response
 
 def fetch_csv_content(csv_path):
+    """
+    Fetches the content of a CSV file from the given path.
+
+    Args:
+        csv_path (str): The path to the CSV file.
+
+    Returns:
+        str or None: The content of the CSV file as a string, or None if an error occurs.
+    """
     try:
         with open(csv_path, 'r') as f:
-            return f.read()
+            csv_content = f.read()
+        return csv_content
     except FileNotFoundError:
         print(f"Error: CSV file not found at path: {csv_path}")
         return None
     except Exception as e:
         print(f"Error reading CSV file: {e}")
         return None
-
-def process_csv_and_query(csv_path, user_query):
     
+def process_csv_and_query(csv_content, user_query):
+    """
+    Processes a CSV file, answers user questions, or generates visualizations using Gemini.
+    """
     try:
-        csv_content = fetch_csv_content(csv_path)
-        if not csv_content:
-            return None
         df = pd.read_csv(io.StringIO(csv_content))
         df_summary = df.describe().to_string()
         df_head = df.to_string()
 
         prompt = f"""
-        You are a data analysis assistant. CSV data:
+        You are a data analysis assistant. You have access to the following CSV data:
 
         Summary:
         {df_summary}
@@ -697,34 +702,51 @@ def process_csv_and_query(csv_path, user_query):
         All Rows:
         {df_head}
 
-        User query: {user_query}
+        The user asked: {user_query}
 
-        Return plotly express code for a visualization. Make plots professional, sleek, and attractive with proper bar spacing for bar graphs. Return only the code.
+        Respond with the answer or visualization code. If the user asks for a visualization, return plotly express code.Return just the code do not add any sentence in your response.Make the plots look professional sleek and very much attractive as if it is created by an expert.Give proper spacing between the bars in bargraph. If the user asks for a number, return just the number.
         """
-        response = genai.GenerativeModel('gemini-1.5-flash').generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+        )
         llm_response = response.text
+        print(llm_response)
 
         if "px." in llm_response.lower():
-            code_to_execute = extract_python_code(llm_response)
-            local_vars = {"df": df, "px": px}
-            exec(code_to_execute, globals(), local_vars)
-            fig = local_vars.get("fig")
-            if fig:
-                os.makedirs(PLOTS_DIR, exist_ok=True)
-                plot_filename = os.path.join(PLOTS_DIR, f"plot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-                fig.write_image(plot_filename, format="png")
-                image_url = cloudinary.uploader.upload(
-                    plot_filename,
-                    resource_type="image",
-                    public_id=f"plot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                )["secure_url"]
-                print(f"Plot saved as: {plot_filename}, Uploaded to: {image_url}")
-                return image_url
-        return None
+            try:
+                code_to_execute = extract_python_code(llm_response)
+                local_vars = {"df": df, "px": px}
+                exec(code_to_execute, globals(), local_vars)
+                fig = local_vars.get("fig")
+                if fig is not None:
+                    os.makedirs(PLOTS_DIR, exist_ok=True)
+
+                    # Save the plot as a PNG file
+                    plot_filename = os.path.join(PLOTS_DIR,
+                                                 f"plot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                    try:
+                        fig.write_image(plot_filename)
+                        print(f"Plot saved as: {plot_filename}")
+                    except Exception as e:
+                        print(f"Error saving plot: {e}")
+
+                    # Encode the image to base64
+                    img_data = fig.to_image(format="png")
+                    img_base64 = base64.b64encode(img_data).decode('utf-8')
+                    return {"response": f"data:image/png;base64,{img_base64}", "type": "image"}
+
+                else:
+                    return {"response": "The Gemini model returned code, but a figure was not created.", "type": "text"}
+
+            except Exception as e:
+                return {"response": f"Error generating visualization: {e}", "type": "text"}
+        else:
+            return {"response": llm_response, "type": "text"}
+
     except Exception as e:
-        print(f"Error processing visualization: {e}")
-        return None
-    
+        return {"response": f"Error processing CSV: {e}", "type": "text"}
+
 csv_path = SALES_DATA_PATH
 # Query Processing
 def generate_plots(user_id, event_channel, text):
