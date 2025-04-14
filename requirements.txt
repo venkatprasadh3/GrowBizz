@@ -1,9 +1,10 @@
+pandas<2.3
 slack-sdk
-twilio
-pandas
 plotly
+twilio
+google-generativeai
+pillow
 cloudinary
 requests
-pillow
-google-generativeai
-kaleido
+slack-bolt
+googletrans==3.1.0a0
