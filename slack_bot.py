@@ -341,15 +341,17 @@ def generate_promotion(user_id, event_channel, text):
 
 def process_audio(audio_file_path: str, prompt: str) -> str:
     try:
-        genai.configure(api_key=GENAI_API_KEY)
-        client = genai.GenerativeModel("gemini-2.0-flash")
-        with open(audio_file_path, 'rb') as audio_file:
-            audio_data = audio_file.read()
+        audio_client = genai.Client(api_key=GEN_API_KEY)
+        myfile = audio_client.files.upload(file=audio_file_path)
         contents = [
             prompt,
-            {"inline_data": {"mime_type": "audio/mp3", "data": audio_data}}
+            myfile
         ]
-        response = client.generate_content(contents)
+        response = audio_client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=contents
+        )
+
         return response.text
     except Exception as e:
         return f"An error occurred: {e}"
@@ -434,7 +436,7 @@ def generate_plots(user_id, event_channel, text):
                 "text": "Plot failed: user not registered."
             }
         customer = user_states[user_id]
-        plots_url=process_csv_and_query(csv_path, user_states[user_id]['customer_id'])
+        plots_url=process_csv_and_query(csv_path, text)
         if plots_url:
             client.files_upload_v2(
                 channel=event_channel,
