@@ -11,7 +11,9 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 import json
-from googletrans import Translator
+import time
+import tempfile
+import google.generativeai as genai
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -25,7 +27,6 @@ CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME")
 CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
 CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
 GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
-DEFAULT_LANGUAGE = "English"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_PATH = os.path.join(BASE_DIR, "users.csv")
@@ -34,7 +35,6 @@ SALES_DATA_PATH = os.path.join(BASE_DIR, "sales_data.csv")
 user_states = {}
 client = WebClient(token=SLACK_BOT_TOKEN)
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
-translator = Translator()
 processed_events = set()
 response_cache = {}
 
@@ -46,45 +46,34 @@ FALLBACK_RESPONSES = {
 }
 
 # Helper Functions
-def get_user_language(user_id):
-    users_df = load_users()
-    user = users_df[users_df['slack_id'] == user_id].iloc[0] if not users_df[users_df['slack_id'] == user_id].empty else None
-    return user['language'] if user else DEFAULT_LANGUAGE
-
-def translate_message(text, target_lang):
-    try:
-        if target_lang.lower() == "english":
-            return text
-        translated = translator.translate(text, dest=target_lang.lower()).text
-        return translated
-    except Exception as e:
-        logging.error(f"Translation error: {e}")
-        return text
-
-def send_whatsapp_message(user_id, message, media_url=None):
+def send_whatsapp_message(user_id, invoice_url):
     if not twilio_client:
         logging.error("WhatsApp not configured: Twilio credentials missing.")
         return FALLBACK_RESPONSES["whatsapp"]
     if user_id not in user_states or 'phone' not in user_states[user_id]:
         logging.error(f"WhatsApp failed for {user_id}: User not registered.")
         return FALLBACK_RESPONSES["whatsapp"]
-    phone = user_states[user_id]['phone']
+    customer = user_states[user_id]
+    phone = customer['phone']
+    name = customer['name']
     if not re.match(r'^\+\d{10,15}$', phone):
         logging.error(f"Invalid phone number for {user_id}: {phone}")
         return "Invalid phone number format. Please register with a valid number. 📱"
-    lang = user_states[user_id].get('language', DEFAULT_LANGUAGE)
-    translated_msg = translate_message(message, lang)
+    recipients = [f"whatsapp:{phone}"]
+    twilio_whatsapp_number = f"whatsapp:{TWILIO_PHONE_NUMBER}"
+    caption_text = f"Hey {name} 👋, thank you for your latest purchase with Smart Shoes 👟. Heres your invoice against your order A35432. Visit us again. We have exciting discounts only for you!"
     try:
-        msg_params = {
-            "body": translated_msg,
-            "from_": f"whatsapp:{TWILIO_PHONE_NUMBER}",
-            "to": f"whatsapp:{phone}"
-        }
-        if media_url:
-            msg_params["media_url"] = [media_url]
-        response = twilio_client.messages.create(**msg_params)
-        logging.info(f"WhatsApp message SID: {response.sid}, Status: {response.status}, To: {phone}")
-        return f"WhatsApp message sent to {phone}! 📱"
+        results = []
+        for recipient in recipients:
+            message = twilio_client.messages.create(
+                media_url=[invoice_url],
+                from_=twilio_whatsapp_number,
+                to=recipient,
+                body=caption_text
+            )
+            results.append(f"WhatsApp message SID: {message.sid} to {recipient}")
+            logging.info(f"WhatsApp message SID: {message.sid}, Status: {message.status}, To: {recipient}")
+        return "WhatsApp message sent successfully! 📱 " + "; ".join(results)
     except Exception as e:
         logging.error(f"WhatsApp error for {user_id}: {e}")
         return FALLBACK_RESPONSES["whatsapp"]
@@ -175,7 +164,6 @@ def generate_invoice(user_id, event_channel):
                 ],
                 "text": "Invoice failed: user not registered."
             }
-        customer = user_states[user_id]
         invoice_url = "https://res.cloudinary.com/dnnj6hykk/image/upload/v1744547940/ivoice-test-GED_2_gmxls7.pdf"
         invoice_data = requests.get(invoice_url).content
         client.files_upload_v2(
@@ -185,8 +173,7 @@ def generate_invoice(user_id, event_channel):
             title="Invoice A35432",
             initial_comment="Your invoice has been generated."
         )
-        whatsapp_msg = f"Hey {customer['name']} 👋, thank you for your latest purchase with Smart Shoes 👟. Here's your invoice against your order A35432. Visit us again. We have exciting discounts *only for you*!"
-        whatsapp_response = send_whatsapp_message(user_id, whatsapp_msg, media_url=invoice_url)
+        whatsapp_response = send_whatsapp_message(user_id, invoice_url)
         response = {
             "blocks": [
                 {"type": "header", "text": {"type": "plain_text", "text": "Invoice Generated 📄"}},
@@ -350,7 +337,6 @@ if __name__ == "__main__":
     from slack_bolt import App as SlackApp
     from slack_bolt.adapter.socket_mode import SocketModeHandler
     slack_app = SlackApp(token=SLACK_BOT_TOKEN)
-
 
     @slack_app.event("app_mention")
     def handle_app_mention(event, say, client, logger):
