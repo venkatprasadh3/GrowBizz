@@ -358,7 +358,7 @@ import pandas as pd
 import io
 import plotly.express as px
 import datetime
-import google.generativeai as genai
+import google.generativeai as genaiplot
 import cloudinary
 import cloudinary.uploader
 
@@ -404,7 +404,7 @@ def process_csv_and_query(csv_path, user_query):
 
         Return plotly express code for a visualization. Make plots professional, sleek, and attractive with proper bar spacing for bar graphs. Return only the code.
         """
-        response = genai.GenerativeModel('gemini-1.5-flash').generate_content(prompt)
+        response = genaiplot.GenerativeModel('gemini-1.5-flash').generate_content(prompt)
         llm_response = response.text
 
         if "px." in llm_response.lower():
@@ -471,9 +471,9 @@ def process_query(text, user_id, event_channel, event_ts):
     try:
         if "register" in text:
             response = handle_customer_registration(user_id, text)
-        elif "generate invoice" in text:
+        elif "invoice" in text:
             response = generate_invoice(user_id, event_channel)
-        elif "generate promotion" in text:
+        elif "promotion" in text:
             response = generate_promotion(user_id, event_channel,text)
         elif "chart" in text:
             response = generate_plots(user_id, event_channel,text)
