@@ -573,9 +573,8 @@ if __name__ == "__main__":
     from slack_bolt.adapter.socket_mode import SocketModeHandler
 
     slack_app = SlackApp(token=SLACK_BOT_TOKEN)
-
-
-    @slack_app.event({"type": "message", "subtype": None})
+        
+    @slack_app.event("app_mention")
     def handle_message_with_mention_and_file(event, client, logger):
         text = event.get("text", "")
         channel_id = event["channel"]
