@@ -33,6 +33,8 @@ import numpy as np
 from scipy.stats import norm
 import seaborn as sns
 import matplotlib.pyplot as plt
+import base64
+import json
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -776,82 +778,63 @@ def generate_plots(user_id, event_channel, text):
 
 
 def process_query(text, user_id, event_channel, event_ts):
-    text = text.lower().strip()
-    if user_id not in user_states:
-        user_states[user_id] = {'last_message': '', 'context': 'idle', 'last_response_time': 0}
-    state = user_states[user_id]
-    state['last_message'] = text
-    logging.info(f"Processing query: '{text}' from {user_id} in {event_channel}")
+        text = text.lower().strip()
+        if user_id not in user_states:
+            user_states[user_id] = {'last_message': '', 'context': 'idle', 'last_response_time': 0}
+        state = user_states[user_id]
+        state['last_message'] = text
+        logging.info(f"Processing query: '{text}' from {user_id} in {event_channel}")
 
-    cache_key = f"{user_id}_{text}_{event_channel}_{event_ts}"
-    current_time = time.time()
-    if cache_key in response_cache and (current_time - response_cache[cache_key]['time'] < 10):
-        logging.info(f"Skipping duplicate query: '{text}' from {user_id}")
-        return response_cache[cache_key]['response']
+        cache_key = f"{user_id}_{text}_{event_channel}_{event_ts}"
+        current_time = time.time()
+        if cache_key in response_cache and (current_time - response_cache[cache_key]['time'] < 10):
+            logging.info(f"Skipping duplicate query: '{text}' from {user_id}")
+            return response_cache[cache_key]['response']
 
-    try:
-        if "register" in text:
-            response = handle_customer_registration(user_id, text)
-        elif "invoice" in text:
-            response = generate_invoice(user_id, event_channel)
-        elif "promotion" in text:
-            response = generate_promotion(user_id, event_channel, text)
-        elif "chart" in text:
-            response = generate_plots(user_id, event_channel, text)
-        elif "insights" in text:
-            response = generate_sales_insights(user_id)
-        elif "weekly analysis" in text:
-            response = generate_weekly_sales_analysis(user_id, event_channel)
-        elif any(greeting in text for greeting in ["hello", "hi", "hey", "how are you", "good morning"]):
-            try:
-                genai.configure(api_key=GENAI_API_KEY)
-                model = genai.GenerativeModel("gemini-2.0-flash")
-                prompt = f"Respond to this casual message in a friendly, professional tone: '{text}'"
-                gen_response = model.generate_content(prompt).text
+        try:
+            if "register" in text:
+                response = handle_customer_registration(user_id, text)
+            elif "invoice" in text:
+                response = generate_invoice(user_id, event_channel)
+            elif "promotion" in text:
+                response = generate_promotion(user_id, event_channel,text)
+            elif "chart" in text:
+                response = generate_plots(user_id, event_channel,text)
+            elif "insights" in text:
+                response = generate_sales_insights(user_id)
+            elif "weekly analysis" in text:
+                response = generate_weekly_sales_analysis(user_id, event_channel)
+            else:
                 response = {
                     "blocks": [
-                        {"type": "section", "text": {"type": "mrkdwn", "text": gen_response}}
+                        {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}}
                     ],
-                    "text": gen_response
+                    "text": "Query not recognized."
                 }
-            except Exception as e:
-                logging.error(f"Casual message processing error for {user_id}: {e}")
-                response = {
-                    "blocks": [
-                        {"type": "section", "text": {"type": "mrkdwn", "text": "Hey there! I'm here to help with your shopping needs. What's up? 😊"}}
-                    ],
-                    "text": "Friendly greeting response"
-                }
-        else:
+
+            response_cache[cache_key] = {'response': response, 'time': current_time}
+            client.chat_postMessage(
+                channel=event_channel,
+                blocks=response["blocks"],
+                text=response.get("text", "GrowBizz response")
+            )
+            logging.info(f"Response sent to {event_channel} for {user_id}: {response['text']}")
+            return response
+        except Exception as e:
+            logging.error(f"Query processing error for {user_id}: {e}")
             response = {
                 "blocks": [
                     {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}}
                 ],
-                "text": "Query not recognized."
+                "text": "Query processing failed."
             }
-
-        response_cache[cache_key] = {'response': response, 'time': current_time}
-        client.chat_postMessage(
-            channel=event_channel,
-            blocks=response["blocks"],
-            text=response.get("text", "GrowBizz response")
-        )
-        logging.info(f"Response sent to {event_channel} for {user_id}: {response['text']}")
-        return response
-    except Exception as e:
-        logging.error(f"Query processing error for {user_id}: {e}")
-        response = {
-            "blocks": [
-                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}}
-            ],
-            "text": "Query processing failed."
-        }
-        client.chat_postMessage(
-            channel=event_channel,
-            blocks=response["blocks"],
-            text=response["text"]
-        )
-        return response
+            client.chat_postMessage(
+                channel=event_channel,
+                blocks=response["blocks"],
+                text=response["text"]
+            )
+            return response
+        
 
 # HTTP Server
 class SlackEventHandler(BaseHTTPRequestHandler):
@@ -927,67 +910,69 @@ if __name__ == "__main__":
         bot_user_id = client.auth_test().get("user_id")
 
         if bot_user_id in text:  # Check if the bot is mentioned
-            if files:
-                for file in files:
-                    if file.get("mimetype", "").startswith("audio/"):
-                        file_id = file["id"]
-                        try:
-                            file_info = client.files_info(file=file_id)
-                            file_details = file_info["file"]
-                            download_url = file_details["url_private_download"]
-                            headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
-                            response = requests.get(download_url, headers=headers, stream=True)
-                            response.raise_for_status()
-
-                            with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-                                for chunk in response.iter_content(chunk_size=8192):
-                                    tmp_file.write(chunk)
-                                local_audio_path = tmp_file.name
-
-                            # Try to get a prompt from the message text
-                            prompt = text.replace(f"<@{bot_user_id}>", "").strip()
-
-                            if prompt:
-                                client.chat_postMessage(
-                                    channel=channel_id,
-                                    text=f"Processing audio with the prompt: '{prompt}'...",
-                                    thread_ts=event.get("thread_ts")
-                                )
-                                processed_text = process_audio(local_audio_path, prompt)
-                                client.chat_postMessage(
-                                    channel=channel_id,
-                                    text=f"Processed audio output:\n{processed_text}",
-                                    thread_ts=event.get("thread_ts")
-                                )
-                            else:
-                                client.chat_postMessage(
-                                    channel=channel_id,
-                                    text="Audio file received with a mention, but no specific prompt was provided.",
-                                    thread_ts=event.get("thread_ts")
-                                )
-                            os.remove(local_audio_path)
-                        except requests.exceptions.RequestException as e:
-                            logger.error(f"Error downloading file {file_id}: {e}")
-                            client.chat_postMessage(channel=channel_id, text=f"Error downloading the audio file.",
-                                                    thread_ts=event.get("thread_ts"))
-                        except SlackApiError as e:
-                            logger.error(f"Slack API error for file {file_id}: {e}")
-                            client.chat_postMessage(channel=channel_id, text=f"Error accessing file information.",
-                                                    thread_ts=event.get("thread_ts"))
-                        except Exception as e:
-                            logger.error(f"An error occurred processing file {file_id}: {e}")
-                            client.chat_postMessage(channel=channel_id,
-                                                    text=f"An error occurred while processing the audio file.",
-                                                    thread_ts=event.get("thread_ts"))
-                    # You can add 'else if' conditions here to handle other file types
+            if "chart" in text:
+                response = generate_plots(user_id, channel_id, text)
             else:
-                # If the bot is mentioned but no files are attached, you can respond to the text mention
-                client.chat_postMessage(
-                    channel=channel_id,
-                    text=f"Hi <@{user_id}>! You mentioned me. If you want me to process an audio file, please attach it to your message.",
-                    thread_ts=event.get("thread_ts")
-                )
+                if files:
+                    for file in files:
+                        if file.get("mimetype", "").startswith("audio/"):
+                            file_id = file["id"]
+                            try:
+                                file_info = client.files_info(file=file_id)
+                                file_details = file_info["file"]
+                                download_url = file_details["url_private_download"]
+                                headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+                                response = requests.get(download_url, headers=headers, stream=True)
+                                response.raise_for_status()
 
+                                with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                                    for chunk in response.iter_content(chunk_size=8192):
+                                        tmp_file.write(chunk)
+                                    local_audio_path = tmp_file.name
+
+                                # Try to get a prompt from the message text
+                                prompt = text.replace(f"<@{bot_user_id}>", "").strip()
+
+                                if prompt:
+                                    client.chat_postMessage(
+                                        channel=channel_id,
+                                        text=f"Processing audio with the prompt: '{prompt}'...",
+                                        thread_ts=event.get("thread_ts")
+                                    )
+                                    processed_text = process_audio(local_audio_path, prompt)
+                                    client.chat_postMessage(
+                                        channel=channel_id,
+                                        text=f"Processed audio output:\n{processed_text}",
+                                        thread_ts=event.get("thread_ts")
+                                    )
+                                else:
+                                    client.chat_postMessage(
+                                        channel=channel_id,
+                                        text="Audio file received with a mention, but no specific prompt was provided.",
+                                        thread_ts=event.get("thread_ts")
+                                    )
+                                os.remove(local_audio_path)
+                            except requests.exceptions.RequestException as e:
+                                logger.error(f"Error downloading file {file_id}: {e}")
+                                client.chat_postMessage(channel=channel_id, text=f"Error downloading the audio file.",
+                                                        thread_ts=event.get("thread_ts"))
+                            except SlackApiError as e:
+                                logger.error(f"Slack API error for file {file_id}: {e}")
+                                client.chat_postMessage(channel=channel_id, text=f"Error accessing file information.",
+                                                        thread_ts=event.get("thread_ts"))
+                            except Exception as e:
+                                logger.error(f"An error occurred processing file {file_id}: {e}")
+                                client.chat_postMessage(channel=channel_id,
+                                                        text=f"An error occurred while processing the audio file.",
+                                                        thread_ts=event.get("thread_ts"))
+                        # You can add 'else if' conditions here to handle other file types
+                else:
+                    # If the bot is mentioned but no files are attached, you can respond to the text mention
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"Hi <@{user_id}>! You mentioned me. If you want me to process an audio file, please attach it to your message.",
+                        thread_ts=event.get("thread_ts")
+                    )
 
     @slack_app.event("file_shared")
     def handle_file_shared(event, client, logger):
