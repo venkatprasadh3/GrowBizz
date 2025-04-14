@@ -14,6 +14,11 @@ import json
 import time
 import tempfile
 import google.generativeai as genai
+from google.generativeai.types import GenerateContentConfig
+from PIL import Image
+import cloudinary
+import cloudinary.uploader
+from googletrans import Translator
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -22,11 +27,27 @@ SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
+TWILIO_PROMO_ACCOUNT_SID = os.environ.get("TWILIO_PROMO_ACCOUNT_SID")
+TWILIO_PROMO_AUTH_TOKEN = os.environ.get("TWILIO_PROMO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "+14155238886")
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME")
 CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
 CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
 GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
+DEFAULT_LANGUAGE = "English"
+
+# Validate environment variables
+required_vars = [
+    "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
+    "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
+    "TWILIO_PROMO_ACCOUNT_SID", "TWILIO_PROMO_AUTH_TOKEN",
+    "CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET",
+    "GENAI_API_KEY"
+]
+for var in required_vars:
+    if not os.environ.get(var):
+        logging.error(f"Missing environment variable: {var}")
+        raise ValueError(f"Environment variable {var} is required")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_PATH = os.path.join(BASE_DIR, "users.csv")
@@ -35,17 +56,34 @@ SALES_DATA_PATH = os.path.join(BASE_DIR, "sales_data.csv")
 user_states = {}
 client = WebClient(token=SLACK_BOT_TOKEN)
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
+translator = Translator()
 processed_events = set()
 response_cache = {}
 
 FALLBACK_RESPONSES = {
     "register": "Sorry, registration failed. Try again later. 🙁",
     "invoice": "Sorry, invoice generation failed. Please try again. 📄",
+    "promotion": "Sorry, promotion generation failed. Please try again. 🖼️",
     "whatsapp": "Failed to send WhatsApp message. Please try again. 📱",
-    "default": "Oops! I didn’t understand that. Try: register, generate invoice. 🤔"
+    "default": "Oops! I didn’t understand that. Try: register, generate invoice, generate promotion. 🤔"
 }
 
 # Helper Functions
+def get_user_language(user_id):
+    users_df = load_users()
+    user = users_df[users_df['slack_id'] == user_id].iloc[0] if not users_df[users_df['slack_id'] == user_id].empty else None
+    return user['language'] if user else DEFAULT_LANGUAGE
+
+def translate_message(text, target_lang):
+    try:
+        if target_lang.lower() == "english":
+            return text
+        translated = translator.translate(text, dest=target_lang.lower()).text
+        return translated
+    except Exception as e:
+        logging.error(f"Translation error: {e}")
+        return text
+
 def send_whatsapp_message(user_id, invoice_url):
     if not twilio_client:
         logging.error("WhatsApp not configured: Twilio credentials missing.")
@@ -193,35 +231,113 @@ def generate_invoice(user_id, event_channel):
             "text": "Invoice generation failed."
         }
 
-def process_audio(audio_file_path: str, prompt: str) -> str:
-    """
-    Processes an audio clip based on the user's prompt.
-    It can translate, summarize, extract key details, or perform other tasks
-    as specified in the prompt.
-
-    Args:
-        audio_file_path: The path to the audio file.
-        prompt: The instruction for processing the audio (e.g., "Translate this to Tamil",
-                "Summarize the key points", "What are the action items mentioned?").
-
-    Returns:
-        The processed audio content as a string.
-    """
+# **Promotion Generation 🖼️**
+def generate_promotion(user_id, event_channel):
     try:
-        client = genai.Client(api_key=GENAI_API_KEY)
-        myfile = client.files.upload(file=audio_file_path)
+        if user_id not in user_states or 'customer_id' not in user_states[user_id]:
+            return {
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "Please register first. 🙁"}}
+                ],
+                "text": "Promotion failed: user not registered."
+            }
+        customer = user_states[user_id]
+        # Gemini Image Generation
+        genai.configure(api_key=GENAI_API_KEY)
+        image_client = genai.GenerativeModel("gemini-2.0-flash")
+        contents = ('Hi, can you create a 50 percent offer poster for my shoe shop named "Smart Shoes". I need a colorful and attractive shoe image and my shop name "Smart Shoes" in centre and the text "50 percent discount" highlighted')
+        response = image_client.generate_content(
+            contents,
+            generation_config=GenerateContentConfig(
+                response_mime_type="image/png"
+            )
+        )
+        generated_image_data = None
+        for part in response.parts:
+            if hasattr(part, 'inline_data') and part.inline_data:
+                generated_image_data = part.inline_data.data
+                break
+        if generated_image_data:
+            image = Image.open(BytesIO(generated_image_data))
+            # Cloudinary Upload
+            cloudinary.config(
+                cloud_name=CLOUDINARY_CLOUD_NAME,
+                api_key=CLOUDINARY_API_KEY,
+                api_secret=CLOUDINARY_API_SECRET,
+                secure=True
+            )
+            public_id = f"Smart_Shoes_test_{uuid.uuid4().hex[:8]}"
+            upload_result = cloudinary.uploader.upload(
+                BytesIO(generated_image_data),
+                resource_type="image",
+                public_id=public_id
+            )
+            image_url = upload_result["secure_url"]
+            # Upload to Slack
+            client.files_upload_v2(
+                channel=event_channel,
+                file=BytesIO(generated_image_data),
+                filename="promotion_poster.png",
+                title="Smart Shoes Promotion",
+                initial_comment="Your promotion poster has been generated."
+            )
+            # Twilio WhatsApp
+            twilio_client_specific = Client(TWILIO_PROMO_ACCOUNT_SID, TWILIO_PROMO_AUTH_TOKEN)
+            recipients = [f"whatsapp:{customer['phone']}"]
+            twilio_whatsapp_number = f"whatsapp:{TWILIO_PHONE_NUMBER}"
+            caption_text = "Sure, Here's the poster that you requested"
+            results = []
+            for recipient in recipients:
+                message = twilio_client_specific.messages.create(
+                    media_url=[image_url],
+                    from_=twilio_whatsapp_number,
+                    to=recipient,
+                    body=caption_text
+                )
+                results.append(f"WhatsApp message SID: {message.sid} to {recipient}")
+                logging.info(f"WhatsApp message SID: {message.sid}, Status: {message.status}, To: {recipient}")
+            whatsapp_response = "WhatsApp message sent successfully! 📱 " + "; ".join(results)
+            response = {
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": "Promotion Generated 🖼️"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"Promotion poster uploaded to this channel!\nURL: {image_url}\n{whatsapp_response}"}}
+                ],
+                "text": "Promotion generated."
+            }
+            logging.info(f"Promotion generated for {user_id}: {image_url}")
+            return response
+        else:
+            logging.error(f"No image data received from Gemini for {user_id}")
+            return {
+                "blocks": [
+                    {"type": "header", "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["promotion"]}}
+                ],
+                "text": "Promotion generation failed."
+            }
+    except Exception as e:
+        logging.error(f"Promotion error for {user_id}: {e}")
+        return {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["promotion"]}}
+            ],
+            "text": "Promotion generation failed."
+        }
+
+def process_audio(audio_file_path: str, prompt: str) -> str:
+    try:
+        genai.configure(api_key=GENAI_API_KEY)
+        client = genai.GenerativeModel("gemini-2.0-flash")
+        with open(audio_file_path, 'rb') as audio_file:
+            audio_data = audio_file.read()
         contents = [
             prompt,
-            myfile
+            {"inline_data": {"mime_type": "audio/mp3", "data": audio_data}}
         ]
-
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=contents
-        )
-
+        response = client.generate_content(contents)
         return response.text
-
     except Exception as e:
         return f"An error occurred: {e}"
 
@@ -245,6 +361,8 @@ def process_query(text, user_id, event_channel, event_ts):
             response = handle_customer_registration(user_id, text)
         elif "generate invoice" in text:
             response = generate_invoice(user_id, event_channel)
+        elif "generate promotion" in text:
+            response = generate_promotion(user_id, event_channel)
         else:
             response = {
                 "blocks": [
@@ -343,84 +461,33 @@ if __name__ == "__main__":
         text = event["text"]
         channel_id = event["channel"]
         user_id = event["user"]
-        file_id = event["file_id"]
-    
+        # Respond to the mention
         try:
-            file_info = client.files_info(file=file_id)
-            file = file_info["file"]
-    
-            if file.get("mimetype", "").startswith("audio/"):
-                download_url = file["url_private_download"]
-                headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
-                response = requests.get(download_url, headers=headers, stream=True)
-                response.raise_for_status()
-    
-                with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        tmp_file.write(chunk)
-                    local_audio_path = tmp_file.name
-    
-                prompt = file.get("initial_comment", {}).get("comment")
-    
-                if prompt:
-                    client.chat_postMessage(
-                        channel=channel_id,
-                        text=f"Processing audio with the prompt: '{prompt}'...",
-                        thread_ts=event.get("thread_ts")
-                    )
-                    processed_text = process_audio(local_audio_path, prompt)
-                    client.chat_postMessage(
-                        channel=channel_id,
-                        text=f"Processed audio output:\n{processed_text}",
-                        thread_ts=event.get("thread_ts")
-                    )
-                else:
-                    client.chat_postMessage(
-                        channel=channel_id,
-                        text="Audio file received, but no prompt was provided in the caption.",
-                        thread_ts=event.get("thread_ts")
-                    )
-    
-                os.remove(local_audio_path)
-    
-            else:
-                logger.info(f"Received a non-audio file: {file.get('mimetype')}")
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"Hi <@{user_id}>! You mentioned me. How can I help you with text or audio files today? Please upload an audio file with your request in the caption, or just send a text message.",
+                thread_ts=event.get("thread_ts")
+            )
         except Exception as e:
-            logger.error(f"Error responding to file shared: {e}")
+            logger.error(f"Error responding to app mention: {e}")
 
-    
-        # # Respond to the mention
-        # try:
-        #     client.chat_postMessage(
-        #         channel=channel_id,
-        #         text=f"Hi <@{user_id}>! You mentioned me. How can I help you with text or audio files today? Please upload an audio file with your request in the caption, or just send a text message.",
-        #         thread_ts=event.get("thread_ts")
-        #     )
-        # except Exception as e:
-        #     logger.error(f"Error responding to app mention: {e}")
-    
     @slack_app.event("file_shared")
     def handle_file_shared(event, client, logger):
         file_id = event["file_id"]
         channel_id = event["channel_id"]
-    
         try:
             file_info = client.files_info(file=file_id)
             file = file_info["file"]
-    
             if file.get("mimetype", "").startswith("audio/"):
                 download_url = file["url_private_download"]
                 headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
                 response = requests.get(download_url, headers=headers, stream=True)
                 response.raise_for_status()
-    
                 with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
                     for chunk in response.iter_content(chunk_size=8192):
                         tmp_file.write(chunk)
                     local_audio_path = tmp_file.name
-    
-                prompt = file.get("initial_comment", {}).get("comment")
-    
+                prompt = file.get("initial_comment", {}).get("comment", "")
                 if prompt:
                     client.chat_postMessage(
                         channel=channel_id,
@@ -439,9 +506,7 @@ if __name__ == "__main__":
                         text="Audio file received, but no prompt was provided in the caption.",
                         thread_ts=event.get("thread_ts")
                     )
-    
                 os.remove(local_audio_path)
-    
             else:
                 logger.info(f"Received a non-audio file: {file.get('mimetype')}")
         except Exception as e:
