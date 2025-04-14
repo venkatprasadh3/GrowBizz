@@ -701,10 +701,7 @@ def process_csv_and_query(csv_path, user_query):
 
         Return plotly express code for a visualization. Make plots professional, sleek, and attractive with proper bar spacing for bar graphs. Return only the code.
         """
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt,
-        )
+        response = genai.GenerativeModel('gemini-1.5-flash').generate_content(prompt)
         llm_response = response.text
 
         if "px." in llm_response.lower():
