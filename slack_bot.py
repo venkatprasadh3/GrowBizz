@@ -413,6 +413,8 @@ if __name__ == "__main__":
     
             else:
                 logger.info(f"Received a non-audio file: {file.get('mimetype')}")
+        except Exception as e:
+            logger.error(f"Error responding to file shared: {e}")
 
     @slack_app.message(".*")
     def handle_message(event, say):
