@@ -5,20 +5,22 @@ import pandas as pd
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import uuid
-from io import BytesIO
-from twilio.rest import Client
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 import json
 import time
 import tempfile
+import cloudinary.uploader
+from googletrans import Translator
 from google import genai
 from google.genai import types
 from PIL import Image
-import cloudinary
+from io import BytesIO
+import os
 import cloudinary.uploader
-from googletrans import Translator
+import cloudinary
+from twilio.rest import Client
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -68,11 +70,14 @@ FALLBACK_RESPONSES = {
     "default": "Oops! I didn’t understand that. Try: register, generate invoice, generate promotion. 🤔"
 }
 
+
 # Helper Functions
 def get_user_language(user_id):
     users_df = load_users()
-    user = users_df[users_df['slack_id'] == user_id].iloc[0] if not users_df[users_df['slack_id'] == user_id].empty else None
+    user = users_df[users_df['slack_id'] == user_id].iloc[0] if not users_df[
+        users_df['slack_id'] == user_id].empty else None
     return user['language'] if user else DEFAULT_LANGUAGE
+
 
 def translate_message(text, target_lang):
     try:
@@ -83,6 +88,7 @@ def translate_message(text, target_lang):
     except Exception as e:
         logging.error(f"Translation error: {e}")
         return text
+
 
 def send_whatsapp_message(user_id, invoice_url):
     if not twilio_client:
@@ -116,6 +122,7 @@ def send_whatsapp_message(user_id, invoice_url):
         logging.error(f"WhatsApp error for {user_id}: {e}")
         return FALLBACK_RESPONSES["whatsapp"]
 
+
 # Data Management
 def load_users():
     if os.path.exists(USERS_PATH):
@@ -128,6 +135,7 @@ def load_users():
         df.to_csv(USERS_PATH, index=False)
         return df
 
+
 # **Customer Registration 📝**
 def handle_customer_registration(user_id, text):
     if user_id not in user_states:
@@ -137,7 +145,8 @@ def handle_customer_registration(user_id, text):
         return {
             "blocks": [
                 {"type": "header", "text": {"type": "plain_text", "text": "Registration Status 📝"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"*You are already registered* with Customer ID: `{state['customer_id']}`."}}
+                {"type": "section", "text": {"type": "mrkdwn",
+                                             "text": f"*You are already registered* with Customer ID: `{state['customer_id']}`."}}
             ],
             "text": "User is already registered."
         }
@@ -168,7 +177,8 @@ def handle_customer_registration(user_id, text):
             response = {
                 "blocks": [
                     {"type": "header", "text": {"type": "plain_text", "text": "Registration Successful ✅"}},
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"Welcome, {name}! Customer ID: `{customer_id}`"}}
+                    {"type": "section",
+                     "text": {"type": "mrkdwn", "text": f"Welcome, {name}! Customer ID: `{customer_id}`"}}
                 ],
                 "text": f"Registered {name} with ID {customer_id}"
             }
@@ -186,10 +196,12 @@ def handle_customer_registration(user_id, text):
     return {
         "blocks": [
             {"type": "header", "text": {"type": "plain_text", "text": "Registration Help 📝"}},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "Please use: `register: name, email, phone, language, address`"}}
+            {"type": "section",
+             "text": {"type": "mrkdwn", "text": "Please use: `register: name, email, phone, language, address`"}}
         ],
         "text": "Registration help provided."
     }
+
 
 # **Invoice Generation 📄**
 def generate_invoice(user_id, event_channel):
@@ -215,7 +227,8 @@ def generate_invoice(user_id, event_channel):
         response = {
             "blocks": [
                 {"type": "header", "text": {"type": "plain_text", "text": "Invoice Generated 📄"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"Invoice uploaded to this channel!\nURL: {invoice_url}\n{whatsapp_response}"}}
+                {"type": "section", "text": {"type": "mrkdwn",
+                                             "text": f"Invoice uploaded to this channel!\nURL: {invoice_url}\n{whatsapp_response}"}}
             ],
             "text": "Invoice generated."
         }
@@ -231,8 +244,9 @@ def generate_invoice(user_id, event_channel):
             "text": "Invoice generation failed."
         }
 
+
 # **Promotion Generation 🖼️**
-def generate_promotion(user_id, event_channel):
+def generate_promotion(user_id, event_channel,text):
     try:
         if user_id not in user_states or 'customer_id' not in user_states[user_id]:
             return {
@@ -243,14 +257,14 @@ def generate_promotion(user_id, event_channel):
                 "text": "Promotion failed: user not registered."
             }
         customer = user_states[user_id]
-        # Gemini Image Generation
-        genai.configure(api_key=GENAI_API_KEY)
-        image_client = genai.GenerativeModel("gemini-2.0-flash")
-        contents = ('Hi, can you create a 50 percent offer poster for my shoe shop named "Smart Shoes". I need a colorful and attractive shoe image and my shop name "Smart Shoes" in centre and the text "50 percent discount" highlighted')
-        response = image_client.generate_content(
-            contents,
-            generation_config=GenerateContentConfig(
-                response_mime_type="image/png"
+        image_client = genai.Client(api_key=GENAI_API_KEY)
+        contents = (
+            text)
+        response = image_client.models.generate_content(
+            model="gemini-2.0-flash-exp-image-generation",
+            contents=contents,
+            config=types.GenerateContentConfig(
+                response_modalities=['Text', 'Image']
             )
         )
         generated_image_data = None
@@ -301,7 +315,8 @@ def generate_promotion(user_id, event_channel):
             response = {
                 "blocks": [
                     {"type": "header", "text": {"type": "plain_text", "text": "Promotion Generated 🖼️"}},
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"Promotion poster uploaded to this channel!\nURL: {image_url}\n{whatsapp_response}"}}
+                    {"type": "section", "text": {"type": "mrkdwn",
+                                                 "text": f"Promotion poster uploaded to this channel!\nURL: {image_url}\n{whatsapp_response}"}}
                 ],
                 "text": "Promotion generated."
             }
@@ -326,6 +341,7 @@ def generate_promotion(user_id, event_channel):
             "text": "Promotion generation failed."
         }
 
+
 def process_audio(audio_file_path: str, prompt: str) -> str:
     try:
         genai.configure(api_key=GENAI_API_KEY)
@@ -340,6 +356,7 @@ def process_audio(audio_file_path: str, prompt: str) -> str:
         return response.text
     except Exception as e:
         return f"An error occurred: {e}"
+
 
 # Query Processing
 def process_query(text, user_id, event_channel, event_ts):
@@ -362,7 +379,7 @@ def process_query(text, user_id, event_channel, event_ts):
         elif "generate invoice" in text:
             response = generate_invoice(user_id, event_channel)
         elif "generate promotion" in text:
-            response = generate_promotion(user_id, event_channel)
+            response = generate_promotion(user_id, event_channel,text)
         else:
             response = {
                 "blocks": [
@@ -393,6 +410,7 @@ def process_query(text, user_id, event_channel, event_ts):
             text=response["text"]
         )
         return response
+
 
 # HTTP Server
 class SlackEventHandler(BaseHTTPRequestHandler):
@@ -447,14 +465,18 @@ class SlackEventHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"Not found")
 
+
 def run_http_server():
     server = HTTPServer(("", int(os.getenv("PORT", 10000))), SlackEventHandler)
     server.serve_forever()
 
+
 if __name__ == "__main__":
     from slack_bolt import App as SlackApp
     from slack_bolt.adapter.socket_mode import SocketModeHandler
+
     slack_app = SlackApp(token=SLACK_BOT_TOKEN)
+
 
     @slack_app.event({"type": "message", "subtype": None})
     def handle_message_with_mention_and_file(event, client, logger):
@@ -463,7 +485,7 @@ if __name__ == "__main__":
         user_id = event["user"]
         files = event.get("files", [])
         bot_user_id = client.auth_test().get("user_id")
-    
+
         if bot_user_id in text:  # Check if the bot is mentioned
             if files:
                 for file in files:
@@ -476,15 +498,15 @@ if __name__ == "__main__":
                             headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
                             response = requests.get(download_url, headers=headers, stream=True)
                             response.raise_for_status()
-    
+
                             with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
                                 for chunk in response.iter_content(chunk_size=8192):
                                     tmp_file.write(chunk)
                                 local_audio_path = tmp_file.name
-    
+
                             # Try to get a prompt from the message text
                             prompt = text.replace(f"<@{bot_user_id}>", "").strip()
-    
+
                             if prompt:
                                 client.chat_postMessage(
                                     channel=channel_id,
@@ -506,13 +528,17 @@ if __name__ == "__main__":
                             os.remove(local_audio_path)
                         except requests.exceptions.RequestException as e:
                             logger.error(f"Error downloading file {file_id}: {e}")
-                            client.chat_postMessage(channel=channel_id, text=f"Error downloading the audio file.", thread_ts=event.get("thread_ts"))
+                            client.chat_postMessage(channel=channel_id, text=f"Error downloading the audio file.",
+                                                    thread_ts=event.get("thread_ts"))
                         except SlackApiError as e:
                             logger.error(f"Slack API error for file {file_id}: {e}")
-                            client.chat_postMessage(channel=channel_id, text=f"Error accessing file information.", thread_ts=event.get("thread_ts"))
+                            client.chat_postMessage(channel=channel_id, text=f"Error accessing file information.",
+                                                    thread_ts=event.get("thread_ts"))
                         except Exception as e:
                             logger.error(f"An error occurred processing file {file_id}: {e}")
-                            client.chat_postMessage(channel=channel_id, text=f"An error occurred while processing the audio file.", thread_ts=event.get("thread_ts"))
+                            client.chat_postMessage(channel=channel_id,
+                                                    text=f"An error occurred while processing the audio file.",
+                                                    thread_ts=event.get("thread_ts"))
                     # You can add 'else if' conditions here to handle other file types
             else:
                 # If the bot is mentioned but no files are attached, you can respond to the text mention
@@ -521,6 +547,7 @@ if __name__ == "__main__":
                     text=f"Hi <@{user_id}>! You mentioned me. If you want me to process an audio file, please attach it to your message.",
                     thread_ts=event.get("thread_ts")
                 )
+
 
     @slack_app.event("file_shared")
     def handle_file_shared(event, client, logger):
@@ -563,6 +590,7 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"Error responding to file shared: {e}")
 
+
     @slack_app.message(".*")
     def handle_message(event, say):
         event_id = f"{event['event_ts']}_{event['channel']}_{event['user']}"
@@ -580,6 +608,7 @@ if __name__ == "__main__":
             response = process_query(text, user_id, event_channel, event_ts)
         except SlackApiError as e:
             logging.error(f"Slack API error for {user_id}: {e}")
+
 
     threading.Thread(target=run_http_server, daemon=True).start()
     SocketModeHandler(slack_app, SLACK_APP_TOKEN).start()
