@@ -343,16 +343,61 @@ if __name__ == "__main__":
         text = event["text"]
         channel_id = event["channel"]
         user_id = event["user"]
+        file_id = event["file_id"]
     
-        # Respond to the mention
         try:
-            client.chat_postMessage(
-                channel=channel_id,
-                text=f"Hi <@{user_id}>! You mentioned me. How can I help you with text or audio files today? Please upload an audio file with your request in the caption, or just send a text message.",
-                thread_ts=event.get("thread_ts")
-            )
+            file_info = client.files_info(file=file_id)
+            file = file_info["file"]
+    
+            if file.get("mimetype", "").startswith("audio/"):
+                download_url = file["url_private_download"]
+                headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+                response = requests.get(download_url, headers=headers, stream=True)
+                response.raise_for_status()
+    
+                with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        tmp_file.write(chunk)
+                    local_audio_path = tmp_file.name
+    
+                prompt = file.get("initial_comment", {}).get("comment")
+    
+                if prompt:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"Processing audio with the prompt: '{prompt}'...",
+                        thread_ts=event.get("thread_ts")
+                    )
+                    processed_text = process_audio(local_audio_path, prompt)
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"Processed audio output:\n{processed_text}",
+                        thread_ts=event.get("thread_ts")
+                    )
+                else:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text="Audio file received, but no prompt was provided in the caption.",
+                        thread_ts=event.get("thread_ts")
+                    )
+    
+                os.remove(local_audio_path)
+    
+            else:
+                logger.info(f"Received a non-audio file: {file.get('mimetype')}")
         except Exception as e:
-            logger.error(f"Error responding to app mention: {e}")
+            logger.error(f"Error responding to file shared: {e}")
+
+    
+        # # Respond to the mention
+        # try:
+        #     client.chat_postMessage(
+        #         channel=channel_id,
+        #         text=f"Hi <@{user_id}>! You mentioned me. How can I help you with text or audio files today? Please upload an audio file with your request in the caption, or just send a text message.",
+        #         thread_ts=event.get("thread_ts")
+        #     )
+        # except Exception as e:
+        #     logger.error(f"Error responding to app mention: {e}")
     
     @slack_app.event("file_shared")
     def handle_file_shared(event, client, logger):
