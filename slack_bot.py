@@ -12,7 +12,7 @@ import json
 import time
 import tempfile
 import cloudinary.uploader
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 from google import genai
 from google.genai import types
 from PIL import Image
@@ -58,7 +58,6 @@ SALES_DATA_PATH = os.path.join(BASE_DIR, "sales_data.csv")
 user_states = {}
 client = WebClient(token=SLACK_BOT_TOKEN)
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
-translator = Translator()
 processed_events = set()
 response_cache = {}
 
@@ -79,16 +78,15 @@ def get_user_language(user_id):
     return user['language'] if user else DEFAULT_LANGUAGE
 
 
-def translate_message(text, target_lang):
+def translate_message(text, target_lang): 
     try:
         if target_lang.lower() == "english":
             return text
-        translated = translator.translate(text, dest=target_lang.lower()).text
+        translated = GoogleTranslator(source='auto', target=target_lang.lower()).translate(text)
         return translated
     except Exception as e:
         logging.error(f"Translation error: {e}")
         return text
-
 
 def send_whatsapp_message(user_id, invoice_url):
     if not twilio_client:
