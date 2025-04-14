@@ -8,3 +8,4 @@ google-genai==1.7.0
 Pillow==10.4.0
 twilio==9.3.3
 plotly==5.24.1
+google-generativeai==0.8.3
