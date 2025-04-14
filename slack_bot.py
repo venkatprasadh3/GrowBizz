@@ -35,6 +35,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import base64
 import json
+import random
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -421,6 +422,8 @@ def load_sales_raw_data():
 def load_sales_data():
     try:
         if os.path.exists(SALES_DATA_PATH):
+            csv_content = generate_real_world_csv()
+            df = pd.read_csv(io.StringIO(csv_content))
             df = pd.read_csv(SALES_DATA_PATH)
             df['Price Each'] = pd.to_numeric(df['Price Each'], errors='coerce')
             df['Order Date'] = pd.to_datetime(
@@ -457,7 +460,7 @@ def update_sales_data(product, quantity, price):
 
 # Sales Insights
 def generate_sales_insights(user_id=None):
-    df = load_sales_data()
+    df = load_sales_raw_data()
     inventory_df = load_inventory()
     if df.empty:
         logging.warning(f"Insights failed for {user_id}: No sales data.")
@@ -658,6 +661,7 @@ def generate_weekly_sales_analysis(user_id, event_channel):
         }
 
 PLOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plots")
+# PLOTS_DIR = r"C:\Users\venka\OneDrive\Desktop\plots"
 
 def extract_python_code(llm_response):
     """Extracts Python code from the LLM's response, handling code blocks."""
@@ -687,7 +691,21 @@ def fetch_csv_content(csv_path):
     except Exception as e:
         print(f"Error reading CSV file: {e}")
         return None
-    
+
+def generate_real_world_csv(num_rows=1000):
+    """Generates a realistic e-commerce sales dataset."""
+    data = []
+    for _ in range(num_rows):
+        date = datetime.date(2023, random.randint(1, 12), random.randint(1, 28))
+        product = random.choice(['Nike', 'Adidas', 'Puma', 'Skechers', 'Birkenstock'])
+        category = random.choice(['Shoe', 'Slipper', 'Sandal'])
+        quantity = random.randint(1, 10)
+        price = random.uniform(100, 2000)
+        customer_id = random.randint(1000, 9999)
+        data.append([date, product, category, quantity, price, customer_id])
+    df = pd.DataFrame(data, columns=['Date', 'Product', 'Category', 'Quantity', 'Price', 'CustomerID'])
+    return df.to_csv(index=False)
+
 def process_csv_and_query(csv_content, user_query):
     """
     Processes a CSV file, answers user questions, or generates visualizations using Gemini.
@@ -695,8 +713,7 @@ def process_csv_and_query(csv_content, user_query):
     try:
         df = pd.read_csv(io.StringIO(csv_content))
         df_summary = df.describe().to_string()
-        df_head = df.to_string()
-
+        df_head = df.head().to_string()
         prompt = f"""
         You are a data analysis assistant. You have access to the following CSV data:
 
@@ -708,15 +725,14 @@ def process_csv_and_query(csv_content, user_query):
 
         The user asked: {user_query}
 
-        Respond with the answer or visualization code. If the user asks for a visualization, return plotly express code.Return just the code do not add any sentence in your response.Make the plots look professional sleek and very much attractive as if it is created by an expert.Give proper spacing between the bars in bargraph. If the user asks for a number, return just the number.
+        Respond with the visualization code using plotly express. Return just the code do not add any sentence in your response.Make the plots look professional sleek and very much attractive as if it is created by an expert.Give proper spacing between the bars in bargraph. If the user asks for a number, return just the number.
         """
+        client = genai.Client(api_key=GENAI_API_KEY)
         response = client.models.generate_content(
             model='gemini-2.0-flash',
             contents=prompt,
         )
         llm_response = response.text
-        print(llm_response)
-
         if "px." in llm_response.lower():
             try:
                 code_to_execute = extract_python_code(llm_response)
@@ -764,7 +780,8 @@ def generate_plots(user_id, event_channel, text):
                 "text": "Plot failed: user not registered."
             }
         customer = user_states[user_id]
-        plots_url=process_csv_and_query(csv_path, text)
+        csv_data = generate_real_world_csv()
+        plots_url=process_csv_and_query(csv_data, text)
         if plots_url:
             client.files_upload_v2(
                 channel=event_channel,
@@ -799,6 +816,7 @@ def process_query(text, user_id, event_channel, event_ts):
             elif "promotion" in text:
                 response = generate_promotion(user_id, event_channel,text)
             elif "chart" in text:
+                print("hello")
                 response = generate_plots(user_id, event_channel,text)
             elif "insights" in text:
                 response = generate_sales_insights(user_id)
