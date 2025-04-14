@@ -5,6 +5,8 @@ import pandas as pd
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import uuid
+import matplotlib
+matplotlib.use('Agg')
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
@@ -24,6 +26,13 @@ from twilio.rest import Client
 import io
 import plotly.express as px
 import datetime
+import mimetypes
+import pytrends
+from pytrends.request import TrendReq
+import numpy as np
+from scipy.stats import norm
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -54,6 +63,8 @@ for var in required_vars:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_PATH = os.path.join(BASE_DIR, "users.csv")
 SALES_DATA_PATH = os.path.join(BASE_DIR, "sales_data.csv")
+SALES_DATA_RAW_PATH = os.path.join(BASE_DIR, "sales_data_raw.csv")
+INVENTORY_PATH = os.path.join(BASE_DIR, "inventory.csv")
 
 user_states = {}
 client = WebClient(token=SLACK_BOT_TOKEN)
@@ -62,11 +73,24 @@ processed_events = set()
 response_cache = {}
 
 FALLBACK_RESPONSES = {
-    "register": "Sorry, registration failed. Try again later. 🙁",
-    "invoice": "Sorry, invoice generation failed. Please try again. 📄",
-    "promotion": "Sorry, promotion generation failed. Please try again. 🖼️",
+    "register": "Sorry, registration failed. Please try again later. 🙁",
+    "purchase": "Purchase could not be processed. Please check back later. 🙁",
+    "weekly analysis": "Weekly analysis unavailable. Data might be missing. 📉",
+    "insights": "Insights generation failed. Please try again. 🙁",
+    "insights_api_quota": "Sales insights unavailable due to API rate limits. Please wait and retry. ⏳",
+    "insights_no_data": "Sales insights unavailable because no sales data was found. 📊",
+    "promotion": "Promotion image generation failed. Try again later. 🙁",
+    "promotion_no_image": "Couldn’t generate promotion image due to missing default image. 🖼️",
     "whatsapp": "Failed to send WhatsApp message. Please try again. 📱",
-    "default": "Oops! I didn’t understand that. Try: register, generate invoice, generate promotion. 🤔"
+    "invoice": "Sorry, invoice generation failed. Please try again. 📄",
+    "chart": "Chart generation failed. Please try again later. 📊",
+    "chart_api_quota": "Chart generation failed due to API rate limits. Using default chart. 📉",
+    "chart_no_data": "Chart generation failed because no sales data was found. 📊",
+    "chart_invalid_query": "Chart generation failed due to an invalid query. Please specify a valid chart type. ❓",
+    "default": "Oops! I didn’t understand that. Try: register, purchase, weekly analysis, insights, promotion, whatsapp, invoice, chart, summarize call, bengali voice, or ask me anything! 🤔",
+    "not_in_channel": "I can't respond here. Please invite me to this channel with `/invite @GrowBizz` or send me a DM! 🚪",
+    "audio": "Audio processing failed. Please try again later. 🎙️",
+    "whatsapp_media": "Failed to send media via WhatsApp. Please try again. 📱"
 }
 
 
@@ -119,19 +143,6 @@ def send_whatsapp_message(user_id, invoice_url):
     except Exception as e:
         logging.error(f"WhatsApp error for {user_id}: {e}")
         return FALLBACK_RESPONSES["whatsapp"]
-
-
-# Data Management
-def load_users():
-    if os.path.exists(USERS_PATH):
-        df = pd.read_csv(USERS_PATH)
-        if 'slack_id' not in df.columns:
-            df['slack_id'] = ""
-        return df
-    else:
-        df = pd.DataFrame(columns=["customer_id", "name", "email", "phone", "language", "address", "slack_id"])
-        df.to_csv(USERS_PATH, index=False)
-        return df
 
 
 # **Customer Registration 📝**
@@ -342,11 +353,19 @@ def generate_promotion(user_id, event_channel, text):
 def process_audio(audio_file_path: str, prompt: str) -> str:
     try:
         audio_client = genai.Client(api_key=GENAI_API_KEY)
-        myfile = audio_client.files.upload(file=audio_file_path)
-        contents = [
-            prompt,
-            myfile
-        ]
+
+        # Guess the MIME type
+        mime_type, _ = mimetypes.guess_type(audio_file_path)
+        if not mime_type:
+            mime_type = "audio/m4a"
+
+        myfile = audio_client.files.upload(
+            file=audio_file_path,
+            mime_type=mime_type 
+        )
+
+        contents = [prompt, myfile]
+
         response = audio_client.models.generate_content(
             model="gemini-2.0-flash",
             contents=contents
@@ -355,6 +374,287 @@ def process_audio(audio_file_path: str, prompt: str) -> str:
         return response.text
     except Exception as e:
         return f"An error occurred: {e}"
+
+trend_cache = {}
+
+# Data Management
+def load_inventory():
+    if os.path.exists(INVENTORY_PATH):
+        return pd.read_csv(INVENTORY_PATH)
+    else:
+        df = pd.DataFrame(columns=["Product", "Stock", "Price"])
+        df.to_csv(INVENTORY_PATH, index=False)
+        return df
+
+def update_inventory(product, quantity):
+    df = load_inventory()
+    if product in df['Product'].values:
+        df.loc[df['Product'] == product, 'Stock'] -= quantity
+        df.to_csv(INVENTORY_PATH, index=False)
+        return True
+    return False
+
+def load_users():
+    if os.path.exists(USERS_PATH):
+        df = pd.read_csv(USERS_PATH)
+        if 'slack_id' not in df.columns:
+            df['slack_id'] = ""
+        return df
+    else:
+        df = pd.DataFrame(columns=["customer_id", "name", "email", "phone", "language", "address"])
+        df.to_csv(USERS_PATH, index=False)
+        return df
+
+def load_sales_raw_data():
+    try:
+        if os.path.exists(SALES_DATA_RAW_PATH):
+            df = pd.read_csv(SALES_DATA_RAW_PATH)
+            df['Price Each'] = pd.to_numeric(df['Price Each'], errors='coerce')
+            df['Order Date'] = pd.to_datetime(df['Order Date'], format='%m/%d/%y %H:%M', errors='coerce').fillna(
+                pd.to_datetime(df['Order Date'], format='%m-%d-%Y %H:%M', errors='coerce')
+            )
+            logging.info(f"Loaded sales data: {df.head().to_string()}")
+            return df.dropna(subset=['Order Date', 'Price Each'])
+        else:
+            df = pd.DataFrame(columns=["Order ID", "Product", "Quantity Ordered", "Price Each", "Order Date", "Purchase Address"])
+            df.to_csv(SALES_DATA_RAW_PATH, index=False)
+            return df
+    except Exception as e:
+        logging.error(f"Error loading sales data: {e}")
+        return pd.DataFrame()
+        
+def load_sales_data():
+    try:
+        if os.path.exists(SALES_DATA_PATH):
+            df = pd.read_csv(SALES_DATA_PATH)
+            df['Price Each'] = pd.to_numeric(df['Price Each'], errors='coerce')
+            df['Order Date'] = pd.to_datetime(df['Order Date'], format='%m/%d/%y %H:%M', errors='coerce').fillna(
+                pd.to_datetime(df['Order Date'], format='%m-%d-%Y %H:%M', errors='coerce')
+            )
+            logging.info(f"Loaded sales data: {df.head().to_string()}")
+            return df.dropna(subset=['Order Date', 'Price Each'])
+        else:
+            df = pd.DataFrame(columns=["Order ID", "Product", "Quantity Ordered", "Price Each", "Order Date", "Purchase Address"])
+            df.to_csv(SALES_DATA_PATH, index=False)
+            return df
+    except Exception as e:
+        logging.error(f"Error loading sales data: {e}")
+        return pd.DataFrame()
+
+def update_sales_data(product, quantity, price):
+    df = load_sales_data()
+    new_sale = pd.DataFrame({
+        "Order ID": [int(df['Order ID'].max() + 1) if not df.empty else 141234],
+        "Product": [product],
+        "Quantity Ordered": [quantity],
+        "Price Each": [price],
+        "Order Date": [pd.Timestamp.now()],
+        "Purchase Address": ["Unknown"]
+    })
+    df = pd.concat([df, new_sale], ignore_index=True)
+    df.to_csv(SALES_DATA_PATH, index=False)
+
+# Sales Insights
+def generate_sales_insights(user_id=None):
+    df = load_sales_data()
+    inventory_df = load_inventory()
+    if df.empty:
+        logging.warning(f"Insights failed for {user_id}: No sales data.")
+        return {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": "Sales Insights for April 2019 📊"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["insights_no_data"]}}
+            ],
+            "text": "Sales insights failed: no data."
+        }
+    try:
+        april_df = df[(df['Order Date'].dt.month == 4) & (df['Order Date'])]
+        if april_df.empty:
+            latest_month = df['Order Date'].dt.to_period('M').max()
+            april_df = df[df['Order Date'].dt.to_period('M') == latest_month]
+            logging.info(f"No data for April 2019 for {user_id}, using {latest_month}")
+            month_text = f"{latest_month.strftime('%B %Y')} (No April 2019 data)"
+        else:
+            month_text = "April"
+            logging.info(f"April data for {user_id}: {april_df.shape[0]} rows")
+
+        total_sales = april_df["Price Each"].sum()
+        days_in_month = 30
+        weeks_in_month = 4.29
+        avg_daily_sales = total_sales / days_in_month
+        avg_weekly_sales = total_sales / weeks_in_month
+        best_selling_product = april_df.groupby("Product")["Quantity Ordered"].sum().idxmax() if not april_df.empty else "N/A"
+
+        trend_score = 0
+        if user_id and best_selling_product in trend_cache:
+            trend_score = trend_cache[best_selling_product]
+            logging.info(f"Using cached trend score for {user_id}: {trend_score}")
+        else:
+            try:
+                pytrends.build_payload(kw_list=[best_selling_product], timeframe='now 7-d')
+                trends = pytrends.interest_over_time()
+                trend_score = trends[best_selling_product].mean() / 100 if best_selling_product in trends else 0
+                if user_id:
+                    trend_cache[best_selling_product] = trend_score
+            except Exception as e:
+                logging.warning(f"Pytrends failed for {user_id}: {e}")
+                trend_score = 0.00
+
+        recommendations = {"decrease": [], "increase": [], "restock": []}
+        if not inventory_df.empty:
+            for _, product in inventory_df.iterrows():
+                product_sales = april_df[april_df['Product'] == product['Product']]['Price Each'].sum()
+                sales_score = product_sales / total_sales if total_sales > 0 else 0
+                stock_score = 1 - (product['Stock'] / 100)
+                weighted_score = 0.4 * sales_score + 0.3 * stock_score + 0.3 * trend_score
+
+                if weighted_score < 0.3:
+                    price_decrease = product['Price'] * 0.1
+                    sales_increase = 0.15 * product_sales
+                    recommendations["decrease"].append(
+                        f"Decrease price of {product['Product']} by ₹{price_decrease:,.2f} to boost sales by ~₹{sales_increase:,.2f} 📉"
+                    )
+                elif weighted_score > 0.7:
+                    price_increase = product['Price'] * 0.05
+                    recommendations["increase"].append(
+                        f"Increase price of {product['Product']} by ₹{price_increase:,.2f} due to high demand 📈"
+                    )
+                if product['Stock'] < 10:
+                    recommendations["restock"].append(
+                        f"Restock {product['Product']} (Current: {product['Stock']}) 📦"
+                    )
+
+        insights = (
+            f"Total Sales: ₹{total_sales:,.2f}\n"
+            f"Average Daily Sales: ₹{avg_daily_sales:,.2f}\n"
+            f"Average Weekly Sales: ₹{avg_weekly_sales:,.2f}\n"
+            f"Best Selling Product: {best_selling_product} 🔥\n"
+            f"GrowBizz Trend Score: {trend_score:.2f}"
+        )
+        recommendations_text = ""
+        if recommendations["decrease"] or recommendations["increase"] or recommendations["restock"]:
+            recommendations_text += "Recommendations 📋\n"
+            if recommendations["decrease"]:
+                recommendations_text += "🔽 Price Decreases:\n" + "\n".join(f"• {r}" for r in recommendations["decrease"][:3]) + "\n"
+            if recommendations["increase"]:
+                recommendations_text += "🔼 Price Increases:\n" + "\n".join(f"• {r}" for r in recommendations["increase"][:3]) + "\n"
+            if recommendations["restock"]:
+                recommendations_text += "📦 Restock:\n" + "\n".join(f"• {r}" for r in recommendations["restock"][:3]) + "\n"
+        else:
+            recommendations_text += "Recommendations 📋\nNo specific recommendations available. 🙁"
+
+        if len(recommendations_text) > 2900:
+            recommendations_text = recommendations_text[:2900] + "... (truncated)"
+        logging.info(f"Insights for {user_id}: {insights}\nRecommendations length: {len(recommendations_text)}")
+
+        response = {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": f"Sales Insights for {month_text} 📊"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": insights}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": recommendations_text}}
+            ],
+            "text": f"Sales insights for {month_text}: Total ₹{total_sales:,.2f}"
+        }
+        return response
+    except Exception as e:
+        logging.error(f"Insights error for {user_id}: {e}")
+        return {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": "Sales Insights for April 2019 📊"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["insights"]}}
+            ],
+            "text": "Sales insights failed."
+        }
+
+# Weekly Sales Analysis
+def generate_weekly_sales_analysis(user_id, event_channel):
+    df = load_sales_raw_data()
+    if df.empty:
+        logging.warning(f"Weekly analysis failed for {user_id}: No sales data.")
+        return {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["weekly analysis"]}}
+            ],
+            "text": "Weekly analysis failed: no sales data."
+        }
+    try:
+        weekly_sales = df.resample('W', on='Order Date')['Price Each'].sum()
+        total_sales = weekly_sales.sum()
+        avg_weekly_sales = weekly_sales.mean()
+        best_selling_product = df.groupby('Product')['Quantity Ordered'].sum().idxmax()
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(weekly_sales.index, weekly_sales.values, marker='o', linestyle='-', color='#4CAF50')
+        plt.title('Weekly Sales Trend', fontsize=14, fontweight='bold')
+        plt.xlabel('Week', fontsize=12)
+        plt.ylabel('Sales (₹)', fontsize=12)
+        plt.grid(True)
+        weekly_trend_file = os.path.join(BASE_DIR, f"weekly_trend_{uuid.uuid4().hex[:8]}.png")
+        plt.savefig(weekly_trend_file)
+        plt.close()
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(df['Order Date'], df['Price Each'].cumsum(), color='#2196F3')
+        plt.title('Overall Sales Trend', fontsize=14, fontweight='bold')
+        plt.xlabel('Date', fontsize=12)
+        plt.ylabel('Cumulative Sales (₹)', fontsize=12)
+        plt.grid(True)
+        overall_trend_file = os.path.join(BASE_DIR, f"overall_trend_{uuid.uuid4().hex[:8]}.png")
+        plt.savefig(overall_trend_file)
+        plt.close()
+
+        mu, std = norm.fit(df['Price Each'].dropna())
+        plt.figure(figsize=(10, 6))
+        sns.histplot(df['Price Each'], kde=True, stat="density", color='#2196F3')
+        x = np.linspace(df['Price Each'].min(), df['Price Each'].max(), 100)
+        plt.plot(x, norm.pdf(x, mu, std), 'r-', lw=2, label=f'Normal fit (μ={mu:.2f}, σ={std:.2f})')
+        plt.title('Sales Distribution', fontsize=14, fontweight='bold')
+        plt.xlabel('Sales Amount (₹)', fontsize=12)
+        plt.ylabel('Density', fontsize=12)
+        plt.legend()
+        sales_dist_file = os.path.join(BASE_DIR, f"sales_distribution_{uuid.uuid4().hex[:8]}.png")
+        plt.savefig(sales_dist_file)
+        plt.close()
+
+        insights = (
+            f"*Total Sales*: ₹{total_sales:,.2f}\n"
+            f"*Average Weekly Sales*: ₹{avg_weekly_sales:,.2f}\n"
+            f"*Best Selling Product*: {best_selling_product} 🔥\n\n"
+            f"*Weekly Sales Trend*: Shows sales fluctuations week by week. 📈\n"
+            f"*Overall Sales Trend*: Tracks total sales growth over time. 📊\n"
+            f"*Sales Distribution*: Displays the spread of sale amounts with a normal fit. 📉"
+        )
+
+        for i, file in enumerate([weekly_trend_file, overall_trend_file, sales_dist_file], 1):
+            with open(file, 'rb') as f:
+                client.files_upload_v2(
+                    channel=event_channel,
+                    file=f,
+                    filename=os.path.basename(file),
+                    title=f"Graph {i}: {'Weekly Sales Trend' if i == 1 else 'Overall Sales Trend' if i == 2 else 'Sales Distribution'}"
+                )
+            os.remove(file)
+
+        response = {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": insights}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": "Graphs uploaded to this channel! 📊"}}
+            ],
+            "text": f"Weekly sales analysis: Total ₹{total_sales:,.2f}, Best Product: {best_selling_product}"
+        }
+        logging.info(f"Weekly analysis generated for {user_id}: {response}")
+        return response
+    except Exception as e:
+        logging.error(f"Weekly analysis error for {user_id}: {e}")
+        return {
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": "Weekly Sales Analysis 📈"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["weekly analysis"]}}
+            ],
+            "text": "Weekly analysis failed."
+        }
 
 PLOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plots")
 
@@ -472,6 +772,10 @@ def process_query(text, user_id, event_channel, event_ts):
             response = generate_promotion(user_id, event_channel,text)
         elif "chart" in text:
             response = generate_plots(user_id, event_channel,text)
+        elif "insights" in text:
+            response = generate_sales_insights(user_id)
+        elif "weekly analysis" in text:
+            response = generate_weekly_sales_analysis(user_id, event_channel)
         else:
             response = {
                 "blocks": [
