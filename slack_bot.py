@@ -269,7 +269,7 @@ def generate_promotion(user_id, event_channel,text):
         for part in response.candidates[0].content.parts:
             if part.inline_data is not None:
                 generated_image_data = part.inline_data.data
-            break
+                break
         if generated_image_data:
             image = Image.open(BytesIO(generated_image_data))
             # Cloudinary Upload
