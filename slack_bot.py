@@ -29,8 +29,6 @@ SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_PROMO_ACCOUNT_SID = os.environ.get("TWILIO_PROMO_ACCOUNT_SID")
-TWILIO_PROMO_AUTH_TOKEN = os.environ.get("TWILIO_PROMO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "+14155238886")
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME")
 CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
@@ -42,7 +40,6 @@ DEFAULT_LANGUAGE = "English"
 required_vars = [
     "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
-    "TWILIO_PROMO_ACCOUNT_SID", "TWILIO_PROMO_AUTH_TOKEN",
     "CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET",
     "GENAI_API_KEY"
 ]
@@ -295,7 +292,7 @@ def generate_promotion(user_id, event_channel,text):
                 initial_comment="Your promotion poster has been generated."
             )
             # Twilio WhatsApp
-            twilio_client_specific = Client(TWILIO_PROMO_ACCOUNT_SID, TWILIO_PROMO_AUTH_TOKEN)
+            twilio_client_specific = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
             recipients = [f"whatsapp:{customer['phone']}"]
             twilio_whatsapp_number = f"whatsapp:{TWILIO_PHONE_NUMBER}"
             caption_text = "Sure, Here's the poster that you requested"
