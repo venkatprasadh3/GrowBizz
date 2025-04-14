@@ -351,20 +351,22 @@ def generate_promotion(user_id, event_channel, text):
 
 def process_audio(audio_file_path: str, prompt: str) -> str:
     try:
-        audio_client = genai.Client(api_key=GENAI_API_KEY)
-        myfile = audio_client.files.upload(file=audio_file_path)
+        client = genai.Client(api_key=GENAI_API_KEY)
+        myfile = client.files.upload(file=audio_file_path)
         contents = [
             prompt,
             myfile
         ]
-        response = audio_client.models.generate_content(
+
+        response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=contents
         )
 
         return response.text
+
     except Exception as e:
-        return f"An error occurred: {e}"
+        return f"An error occurred: {e}"
 
 trend_cache = {}
 
