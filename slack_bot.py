@@ -21,6 +21,9 @@ import os
 import cloudinary.uploader
 import cloudinary
 from twilio.rest import Client
+import io
+import plotly.express as px
+import datetime
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -352,18 +355,6 @@ def process_audio(audio_file_path: str, prompt: str) -> str:
     except Exception as e:
         return f"An error occurred: {e}"
 
-import os
-import re
-import pandas as pd
-import io
-import plotly.express as px
-import datetime
-import google.generativeai as genaiplot
-import cloudinary
-import cloudinary.uploader
-
-# Configuration
-
 PLOTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plots")
 
 def extract_python_code(llm_response):
@@ -404,7 +395,10 @@ def process_csv_and_query(csv_path, user_query):
 
         Return plotly express code for a visualization. Make plots professional, sleek, and attractive with proper bar spacing for bar graphs. Return only the code.
         """
-        response = genaiplot.GenerativeModel('gemini-1.5-flash').generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+        )
         llm_response = response.text
 
         if "px." in llm_response.lower():
