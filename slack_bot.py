@@ -428,7 +428,7 @@ def process_csv_and_query(csv_path, user_query):
         print(f"Error processing visualization: {e}")
         return None
     
-csv_path = "REPLACE SALES DATA CSV PATH HERE"  
+csv_path = SALES_DATA_PATH
 # Query Processing
 def generate_plots(user_id, event_channel, text):
     try:
