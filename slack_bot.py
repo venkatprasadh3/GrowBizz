@@ -13,8 +13,8 @@ import requests
 import json
 import time
 import tempfile
-import google.generativeai as genai
-from google.generativeai.types import GenerateContentConfig
+from google import genai
+from google.genai import types
 from PIL import Image
 import cloudinary
 import cloudinary.uploader
