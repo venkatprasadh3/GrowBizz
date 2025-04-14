@@ -205,6 +205,38 @@ def generate_invoice(user_id, event_channel):
             "text": "Invoice generation failed."
         }
 
+def process_audio(audio_file_path: str, prompt: str) -> str:
+    """
+    Processes an audio clip based on the user's prompt.
+    It can translate, summarize, extract key details, or perform other tasks
+    as specified in the prompt.
+
+    Args:
+        audio_file_path: The path to the audio file.
+        prompt: The instruction for processing the audio (e.g., "Translate this to Tamil",
+                "Summarize the key points", "What are the action items mentioned?").
+
+    Returns:
+        The processed audio content as a string.
+    """
+    try:
+        client = genai.Client(api_key="")
+        myfile = client.files.upload(file=audio_file_path)
+        contents = [
+            prompt,
+            myfile
+        ]
+
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=contents
+        )
+
+        return response.text
+
+    except Exception as e:
+        return f"An error occurred: {e}"
+
 # Query Processing
 def process_query(text, user_id, event_channel, event_ts):
     text = text.lower().strip()
@@ -317,6 +349,69 @@ if __name__ == "__main__":
     from slack_bolt import App as SlackApp
     from slack_bolt.adapter.socket_mode import SocketModeHandler
     slack_app = SlackApp(token=SLACK_BOT_TOKEN)
+
+
+    @slack_app.event("app_mention")
+    def handle_app_mention(event, say, client, logger):
+        text = event["text"]
+        channel_id = event["channel"]
+        user_id = event["user"]
+    
+        # Respond to the mention
+        try:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"Hi <@{user_id}>! You mentioned me. How can I help you with text or audio files today? Please upload an audio file with your request in the caption, or just send a text message.",
+                thread_ts=event.get("thread_ts")
+            )
+        except Exception as e:
+            logger.error(f"Error responding to app mention: {e}")
+    
+    @slack_app.event("file_shared")
+    def handle_file_shared(event, client, logger):
+        file_id = event["file_id"]
+        channel_id = event["channel_id"]
+    
+        try:
+            file_info = client.files_info(file=file_id)
+            file = file_info["file"]
+    
+            if file.get("mimetype", "").startswith("audio/"):
+                download_url = file["url_private_download"]
+                headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+                response = requests.get(download_url, headers=headers, stream=True)
+                response.raise_for_status()
+    
+                with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        tmp_file.write(chunk)
+                    local_audio_path = tmp_file.name
+    
+                prompt = file.get("initial_comment", {}).get("comment")
+    
+                if prompt:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"Processing audio with the prompt: '{prompt}'...",
+                        thread_ts=event.get("thread_ts")
+                    )
+                    processed_text = process_audio(local_audio_path, prompt)
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"Processed audio output:\n{processed_text}",
+                        thread_ts=event.get("thread_ts")
+                    )
+                else:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text="Audio file received, but no prompt was provided in the caption.",
+                        thread_ts=event.get("thread_ts")
+                    )
+    
+                os.remove(local_audio_path)
+    
+            else:
+                logger.info(f"Received a non-audio file: {file.get('mimetype')}")
 
     @slack_app.message(".*")
     def handle_message(event, say):
