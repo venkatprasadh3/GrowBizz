@@ -9,11 +9,7 @@ from io import BytesIO
 from twilio.rest import Client
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import google.generativeai as genai
-import time
-from PIL import Image
-import cloudinary
-import cloudinary.uploader
+import requests
 import json
 from googletrans import Translator
 
@@ -22,28 +18,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
-GENAI_API_KEY = os.environ.get("GENAI_API_KEY")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
-CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME")
-CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
-CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
+TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "+14155238886")
+CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "dnnj6hykk")
+CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY", "991754979222148")
+CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET", "u-C4hv1OBts-wGDrkfDeGRv4OCk")
 DEFAULT_LANGUAGE = "English"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_PATH = os.path.join(BASE_DIR, "users.csv")
+SALES_DATA_PATH = os.path.join(BASE_DIR, "sales_data.csv")
 
 user_states = {}
 client = WebClient(token=SLACK_BOT_TOKEN)
-genai.configure(api_key=GENAI_API_KEY)
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
-cloudinary.config(
-    cloud_name=CLOUDINARY_CLOUD_NAME,
-    api_key=CLOUDINARY_API_KEY,
-    api_secret=CLOUDINARY_API_SECRET,
-    secure=True
-)
 translator = Translator()
 processed_events = set()
 response_cache = {}
@@ -51,10 +40,8 @@ response_cache = {}
 FALLBACK_RESPONSES = {
     "register": "Sorry, registration failed. Try again later. 🙁",
     "invoice": "Sorry, invoice generation failed. Please try again. 📄",
-    "promotion": "Promotion generation failed. Try again later. 🖼️",
-    "visualization": "Visualization generation failed. Please try again. 📊",
     "whatsapp": "Failed to send WhatsApp message. Please try again. 📱",
-    "default": "Oops! I didn’t understand that. Try: register, generate invoice, generate promotion, generate visualization, or ask me anything! 🤔"
+    "default": "Oops! I didn’t understand that. Try: register, generate invoice. 🤔"
 }
 
 # Helper Functions
@@ -72,29 +59,6 @@ def translate_message(text, target_lang):
     except Exception as e:
         logging.error(f"Translation error: {e}")
         return text
-
-def upload_to_cloudinary(file_path=None, file_bytes=None, public_id=None, resource_type="auto"):
-    try:
-        if file_path and os.path.exists(file_path):
-            upload_result = cloudinary.uploader.upload(
-                file_path,
-                resource_type=resource_type,
-                public_id=public_id or f"growbizz_{uuid.uuid4().hex[:8]}"
-            )
-        elif file_bytes:
-            upload_result = cloudinary.uploader.upload(
-                file_bytes,
-                resource_type=resource_type,
-                public_id=public_id or f"growbizz_{uuid.uuid4().hex[:8]}"
-            )
-        else:
-            raise ValueError("No file or bytes provided")
-        url = upload_result["secure_url"]
-        logging.info(f"File uploaded to Cloudinary: {url}")
-        return url
-    except Exception as e:
-        logging.error(f"Cloudinary upload failed: {e}")
-        return None
 
 def send_whatsapp_message(user_id, message, media_url=None):
     if not twilio_client:
@@ -212,9 +176,10 @@ def generate_invoice(user_id, event_channel):
             }
         customer = user_states[user_id]
         invoice_url = "https://res.cloudinary.com/dnnj6hykk/image/upload/v1744547940/ivoice-test-GED_2_gmxls7.pdf"
+        invoice_data = requests.get(invoice_url).content
         client.files_upload_v2(
             channel=event_channel,
-            file=BytesIO(requests.get(invoice_url).content),
+            file=BytesIO(invoice_data),
             filename="invoice_A35432.pdf",
             title="Invoice A35432",
             initial_comment="Your invoice has been generated."
@@ -240,106 +205,6 @@ def generate_invoice(user_id, event_channel):
             "text": "Invoice generation failed."
         }
 
-# **Promotion Generation 🖼️**
-def generate_promotion(user_id, event_channel, image_client="Customer"):
-    try:
-        if user_id not in user_states or 'customer_id' not in user_states[user_id]:
-            return {
-                "blocks": [
-                    {"type": "header", "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}},
-                    {"type": "section", "text": {"type": "mrkdwn", "text": "Please register first. 🙁"}}
-                ],
-                "text": "Promotion failed: user not registered."
-            }
-        customer = user_states[user_id]
-        contents = f'Create a 50 percent offer poster for my shoe shop named "Smart Shoes". Include a colorful and attractive shoe image, shop name "Smart Shoes" in center, and text "50 percent discount" highlighted. Personalize for {image_client}.'
-        response = genai.GenerativeModel("gemini-1.5-flash").generate_content(contents)
-        generated_image_data = None
-        for part in response.parts:
-            if hasattr(part, 'inline_data') and part.inline_data:
-                generated_image_data = part.inline_data.data
-                break
-        if not generated_image_data:
-            raise Exception("No image data received from Gemini.")
-        image = Image.open(BytesIO(generated_image_data))
-        public_id = f"smart_shoes_promo_{uuid.uuid4().hex[:8]}"
-        upload_result = cloudinary.uploader.upload(
-            BytesIO(generated_image_data),
-            resource_type="image",
-            public_id=public_id
-        )
-        image_url = upload_result["secure_url"]
-        client.files_upload_v2(
-            channel=event_channel,
-            file=BytesIO(generated_image_data),
-            filename="promotion_poster.png",
-            title="Smart Shoes Promotion",
-            initial_comment=f"Promotion poster for {image_client}."
-        )
-        whatsapp_msg = f"Hey {customer['name']} 👋, check out our latest promotion at Smart Shoes 👟! Enjoy a 50% discount on your next purchase. Visit us soon, {image_client}! We have exclusive offers *just for you*!"
-        whatsapp_response = send_whatsapp_message(user_id, whatsapp_msg, media_url=image_url)
-        response = {
-            "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": "Promotion Generated 🖼️"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"Promotion poster uploaded to this channel!\nURL: {image_url}\n{whatsapp_response}"}}
-            ],
-            "text": "Promotion generated."
-        }
-        logging.info(f"Promotion generated for {user_id}: {image_url}")
-        return response
-    except Exception as e:
-        logging.error(f"Promotion error for {user_id}: {e}")
-        return {
-            "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": "Promotion Generation 🖼️"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["promotion"]}}
-            ],
-            "text": "Promotion generation failed."
-        }
-
-# **Visualization Generation 📊**
-def generate_visualization(user_id, event_channel):
-    try:
-        if user_id not in user_states or 'customer_id' not in user_states[user_id]:
-            return {
-                "blocks": [
-                    {"type": "header", "text": {"type": "plain_text", "text": "Visualization Generation 📊"}},
-                    {"type": "section", "text": {"type": "mrkdwn", "text": "Please register first. 🙁"}}
-                ],
-                "text": "Visualization failed: user not registered."
-            }
-        from plotly_test import process_csv_and_query
-        csv_path = os.path.join(BASE_DIR, "sales_data.csv")
-        prompt = "create a pie chart showing how many products sold were having price less than 500 and greater than 500"
-        image_url = process_csv_and_query(csv_path, prompt)
-        if not image_url:
-            raise Exception("Visualization generation failed.")
-        client.files_upload_v2(
-            channel=event_channel,
-            file=BytesIO(requests.get(image_url).content),
-            filename="sales_pie_chart.png",
-            title="Sales Pie Chart",
-            initial_comment="Pie chart for product sales by price range."
-        )
-        response = {
-            "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": "Visualization Generated 📊"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"Pie chart uploaded to this channel!\nURL: {image_url}"}}
-            ],
-            "text": "Visualization generated."
-        }
-        logging.info(f"Visualization generated for {user_id}: {image_url}")
-        return response
-    except Exception as e:
-        logging.error(f"Visualization error for {user_id}: {e}")
-        return {
-            "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": "Visualization Generation 📊"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["visualization"]}}
-            ],
-            "text": "Visualization generation failed."
-        }
-
 # Query Processing
 def process_query(text, user_id, event_channel, event_ts):
     text = text.lower().strip()
@@ -356,30 +221,16 @@ def process_query(text, user_id, event_channel, event_ts):
         return response_cache[cache_key]['response']
 
     try:
-        if text in ["hello", "how are you"]:
-            response = {
-                "blocks": [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": "Hey there! I'm doing great, thanks for asking! 😊 What's up with you?"}}
-                ],
-                "text": "Casual response."
-            }
-        elif "register" in text:
+        if "register" in text:
             response = handle_customer_registration(user_id, text)
         elif "generate invoice" in text:
             response = generate_invoice(user_id, event_channel)
-        elif "generate promotion" in text:
-            customer_name = user_states[user_id]['name'] if user_id in user_states else "Customer"
-            response = generate_promotion(user_id, event_channel, image_client=customer_name)
-        elif "generate visualization" in text:
-            response = generate_visualization(user_id, event_channel)
         else:
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            gen_response = model.generate_content(f"Respond to this user query: {text}")
             response = {
                 "blocks": [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": gen_response.text.strip()}}
+                    {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["default"]}}
                 ],
-                "text": gen_response.text.strip()[:100] + "..."
+                "text": "Query not recognized."
             }
 
         response_cache[cache_key] = {'response': response, 'time': current_time}
