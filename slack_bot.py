@@ -341,7 +341,7 @@ def generate_promotion(user_id, event_channel, text):
 
 def process_audio(audio_file_path: str, prompt: str) -> str:
     try:
-        audio_client = genai.Client(api_key=GEN_API_KEY)
+        audio_client = genai.Client(api_key=GENAI_API_KEY)
         myfile = audio_client.files.upload(file=audio_file_path)
         contents = [
             prompt,
