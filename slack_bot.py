@@ -220,7 +220,7 @@ def process_audio(audio_file_path: str, prompt: str) -> str:
         The processed audio content as a string.
     """
     try:
-        client = genai.Client(api_key="")
+        client = genai.Client(api_key="AIzaSyCKPxpCqQZstZdFexpoVEuiQxUGM1YHvig")
         myfile = client.files.upload(file=audio_file_path)
         contents = [
             prompt,
