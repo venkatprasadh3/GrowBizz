@@ -670,7 +670,7 @@ def generate_weekly_sales_analysis(user_id, event_channel):
 
         insights = (
             f"*Total Sales*: ₹38,900\n"
-            f"*Average Weekly Sales*: ₹1,450\n"
+            f"*Average Weekly Sales*: ₹10,200\n"
             f"*Best Selling Product*: Sneakers 🔥\n\n"
             f"*Weekly Sales Trend*: Shows sales fluctuations week by week. 📈\n"
             f"*Overall Sales Trend*: Tracks total sales growth over time. 📊\n"
@@ -882,7 +882,6 @@ def process_query(text, user_id, event_channel, event_ts):
             elif "promotion" in text:
                 response = generate_promotion(user_id, event_channel,text)
             elif "chart" in text:
-                print("hello")
                 response = generate_plots(user_id, event_channel,text)
             elif "insights" in text:
                 response = generate_sales_insights(user_id)
