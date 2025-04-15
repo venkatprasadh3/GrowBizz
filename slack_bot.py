@@ -466,13 +466,19 @@ def generate_sales_insights(user_id=None):
         logging.warning(f"Insights failed for {user_id}: No sales data.")
         return {
             "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": "Sales Insights for April 2019 📊"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["insights_no_data"]}}
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Sales Insights for April 📊"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["insights_no_data"]}
+                }
             ],
             "text": "Sales insights failed: no data."
         }
     try:
-        april_df = df[df['Order Date'].dt.month == 4]
+        april_df = df[(df['Order Date'].dt.month == 4) & (df['Order Date'].dt.year == 2019)]
         if april_df.empty:
             latest_month = df['Order Date'].dt.to_period('M').max()
             april_df = df[df['Order Date'].dt.to_period('M') == latest_month]
@@ -529,33 +535,43 @@ def generate_sales_insights(user_id=None):
                     )
 
         insights = (
-            f"Total Sales: ₹{total_sales:,.2f}\n"
-            f"Average Daily Sales: ₹{avg_daily_sales:,.2f}\n"
-            f"Average Weekly Sales: ₹{avg_weekly_sales:,.2f}\n"
-            f"Best Selling Product: {best_selling_product} 🔥\n"
-            f"GrowBizz Trend Score: {trend_score:.2f}"
+            f"*Total Sales*: ₹{total_sales:,.2f}\n"
+            f"*Average Daily Sales*: ₹{avg_daily_sales:,.2f}\n"
+            f"*Average Weekly Sales*: ₹{avg_weekly_sales:,.2f}\n"
+            f"*Best Selling Product*: {best_selling_product} 🔥\n"
+            f"*GrowBizz Trend Score*: {trend_score:.2f}"
         )
         recommendations_text = ""
         if recommendations["decrease"] or recommendations["increase"] or recommendations["restock"]:
-            recommendations_text += "Recommendations 📋\n"
+            recommendations_text += "*Recommendations* 📋\n"
             if recommendations["decrease"]:
-                recommendations_text += "🔽 Price Decreases:\n" + "\n".join(f"• {r}" for r in recommendations["decrease"][:3]) + "\n"
+                recommendations_text += "🔽 *Price Decreases*:\n" + "\n".join(f"• {r}" for r in recommendations["decrease"][:3]) + "\n"
             if recommendations["increase"]:
-                recommendations_text += "🔼 Price Increases:\n" + "\n".join(f"• {r}" for r in recommendations["increase"][:3]) + "\n"
+                recommendations_text += "🔼 *Price Increases*:\n" + "\n".join(f"• {r}" for r in recommendations["increase"][:3]) + "\n"
             if recommendations["restock"]:
-                recommendations_text += "📦 Restock:\n" + "\n".join(f"• {r}" for r in recommendations["restock"][:3]) + "\n"
+                recommendations_text += "📦 *Restock*:\n" + "\n".join(f"• {r}" for r in recommendations["restock"][:3]) + "\n"
         else:
-            recommendations_text += "Recommendations 📋\nNo specific recommendations available. 🙁"
+            recommendations_text += "*Recommendations* 📋\nNo specific recommendations available. 🙁"
 
+        # Truncate to avoid Slack block limit
         if len(recommendations_text) > 2900:
             recommendations_text = recommendations_text[:2900] + "... (truncated)"
         logging.info(f"Insights for {user_id}: {insights}\nRecommendations length: {len(recommendations_text)}")
 
         response = {
             "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": f"Sales Insights for {month_text} 📊"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": insights}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": recommendations_text}}
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": f"Sales Insights for {month_text} 📊"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": insights}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": recommendations_text}
+                }
             ],
             "text": f"Sales insights for {month_text}: Total ₹{total_sales:,.2f}"
         }
@@ -564,8 +580,14 @@ def generate_sales_insights(user_id=None):
         logging.error(f"Insights error for {user_id}: {e}")
         return {
             "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": "Sales Insights for April 📊"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["insights"]}}
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Sales Insights for April 📊"}
+                },
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": FALLBACK_RESPONSES["insights"]}
+                }
             ],
             "text": "Sales insights failed."
         }
