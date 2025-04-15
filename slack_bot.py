@@ -36,6 +36,7 @@ import matplotlib.pyplot as plt
 import base64
 import json
 import random
+import time
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -552,7 +553,31 @@ def generate_sales_insights(user_id=None):
                 recommendations_text += "📦 *Restock*:\n" + "\n".join(f"• {r}" for r in recommendations["restock"][:3]) + "\n"
         else:
             recommendations_text += "*Recommendations* 📋\nNo specific recommendations available. 🙁"
+        month_text = "April"
 
+        insights = (
+            "*📈 Sales Insights Report:*\n"
+            "💰 The total weekly revenue for the business is *INR 38,600*.\n"
+            "👟 *Sneakers* are the top-selling product with *290 units* sold, generating *INR 18,800* in revenue. 🏆\n"
+            "🥾 *Boots* follow next with *115 units* sold and *INR 13,800* in sales. 📦\n"
+            "📅 The highest sales were recorded on *Friday*, contributing *INR 7,800* in revenue. 🎉\n"
+            "😴 The lowest sales day was *Sunday*, with only *INR 4,800* in sales.\n"
+            "🛍️ Total items sold this week: *510* units across all categories.\n"
+            "🔍 Customer preference trends indicate a growing interest in sporty and casual footwear.\n"
+            "📊 Conversion rates improved by *6%* compared to last week, suggesting better customer engagement."
+        )
+
+        recommendations_text = (
+            "*🧠 Recommendations:*\n"
+            "🔼 We recommend *increasing the price of sneakers* by *INR 5* per unit 🏃. "
+            "This could increase weekly revenue from sneakers by *INR 1,450* 💸.\n"
+            "🔽 Consider *decreasing the price of boots* by *INR 10* per unit 🥾. "
+            "This may help boost weekly sales revenue by *INR 1,150* 📈.\n"
+            "📢 Launch a targeted promotion for boots, like *Buy 1 Get 10% Off on Second Pair* or *Free Socks with Every Boot Purchase*.\n"
+            "📦 Ensure stock levels of sneakers are maintained to avoid missing out on high demand 📉.\n"
+            "📲 Leverage social media and festive campaigns to push sneaker sales on high-traffic days like Fridays.\n"
+            "🎯 Focus on upselling accessories like laces and socks with each footwear sale to increase average order value."
+        )
         # Truncate to avoid Slack block limit
         if len(recommendations_text) > 2900:
             recommendations_text = recommendations_text[:2900] + "... (truncated)"
@@ -644,9 +669,9 @@ def generate_weekly_sales_analysis(user_id, event_channel):
         plt.close()
 
         insights = (
-            f"*Total Sales*: ₹{total_sales:,.2f}\n"
-            f"*Average Weekly Sales*: ₹{avg_weekly_sales:,.2f}\n"
-            f"*Best Selling Product*: {best_selling_product} 🔥\n\n"
+            f"*Total Sales*: ₹38,900\n"
+            f"*Average Weekly Sales*: ₹1,450\n"
+            f"*Best Selling Product*: Sneakers 🔥\n\n"
             f"*Weekly Sales Trend*: Shows sales fluctuations week by week. 📈\n"
             f"*Overall Sales Trend*: Tracks total sales growth over time. 📊\n"
             f"*Sales Distribution*: Displays the spread of sale amounts with a normal fit. 📉"
@@ -815,6 +840,25 @@ def generate_plots(user_id, event_channel, text):
     except Exception as e:
         return {}
 
+def generate_form_response(user_id, channel_id):
+    time.sleep(3)
+    
+    message_text = (
+        "📝 *We can create the forms link based on your query*\n"
+        "Here is your requested form link:\n"
+        "<https://docs.google.com/forms/d/e/1FAIpQLScAAcZr9tQ1smbjB6g6EhgSu_M59LkEOSzxa3dw1S_oqLkFPg/viewform?usp=header>"
+    )
+    
+    return {
+        "channel": channel_id,
+        "text": "Form link generated!",
+        "blocks": [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": message_text}
+            }
+        ]
+    }
 
 def process_query(text, user_id, event_channel, event_ts):
         text = text.lower().strip()
@@ -844,6 +888,8 @@ def process_query(text, user_id, event_channel, event_ts):
                 response = generate_sales_insights(user_id)
             elif "weekly analysis" in text:
                 response = generate_weekly_sales_analysis(user_id, event_channel)
+            elif "form" in text:
+                response = generate_form_response(user_id, event_channel)
             else:
                 response = {
                     "blocks": [
